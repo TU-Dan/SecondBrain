@@ -10,5 +10,6 @@ static/transcripts/
 static/scripts/
 static/images/
 .DS_Store
-*.pycstatic/audio/*.mp4
+*.pyc
+static/audio/*.mp4
 static/audio/*.mp3
