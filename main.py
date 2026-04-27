@@ -1,3 +1,4 @@
+import asyncio
 import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, File, UploadFile, BackgroundTasks
@@ -28,6 +29,15 @@ from services.db import (
 from services.feeds import refresh_all_feeds, refresh_feed, resolve_feed_url
 
 
+def _remember_in_bg(article_id: str):
+    """Background: index article into GBrain memory after save."""
+    from services.db import get_article
+    from services import memory
+    article = get_article(article_id)
+    if article:
+        memory.remember(article)
+
+
 def _retag_untagged():
     """Background thread: generate tags for articles that have none."""
     articles = get_untagged_articles()
@@ -54,7 +64,10 @@ async def lifespan(app: FastAPI):
     init_db()
     threading.Thread(target=_retag_untagged, daemon=True).start()
     asyncio.create_task(refresh_all_feeds())
+    from services import agent
+    agent.start()
     yield
+    agent.stop()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -229,6 +242,7 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
             )
             if tags:
                 update_tags(article_id, tags)
+            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
 
         elif len(text) <= CHUNK_THRESHOLD:
             update_job(job_id, "processing", "正在使用 DeepSeek 处理内容...")
@@ -274,6 +288,7 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
             if tags:
                 update_tags(article_id, tags)
                 print(f"[{job_id}] Tags: {tags}")
+            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
 
         else:
             chunks = chunk_text(text)
@@ -534,6 +549,37 @@ async def generate_post(article_id: str, request: Request):
     from services.db import save_output
     save_output(article_id, format_type, result, pain_point)
     return JSONResponse({"ok": True, "content": result})
+
+
+@app.get("/api/brain/query")
+async def api_brain_query(q: str, limit: int = 8):
+    """Hybrid search across GBrain memory."""
+    from services import memory
+    results = await asyncio.to_thread(memory.recall, q, limit)
+    return JSONResponse({"query": q, "results": results})
+
+
+@app.get("/api/brain/synthesize")
+async def api_brain_synthesize(topic: str):
+    """Cross-article synthesis on a topic."""
+    from services import memory
+    text = await asyncio.to_thread(memory.synthesize, topic)
+    return JSONResponse({"topic": topic, "synthesis": text})
+
+
+@app.get("/api/brain/graph")
+async def api_brain_graph(slug: str, depth: int = 2):
+    """Entity relationship graph traversal."""
+    from services import memory
+    graph = await asyncio.to_thread(memory.get_graph, slug, depth)
+    return JSONResponse({"slug": slug, "graph": graph})
+
+
+@app.get("/api/brain/stats")
+async def api_brain_stats():
+    """GBrain memory statistics."""
+    from services import memory
+    return JSONResponse(memory.stats())
 
 
 @app.get("/api/articles/{article_id}/outputs")
@@ -843,6 +889,7 @@ async def api_inbox_save(item_id: str, background_tasks: BackgroundTasks):
             )
             if tags:
                 update_tags(article_id, tags)
+            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
         except Exception as e:
             print(f"[inbox] save error for {item['url']}: {e}")
 
