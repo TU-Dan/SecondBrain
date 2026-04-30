@@ -29,10 +29,11 @@ def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
 
 
 def _slugify(text: str) -> str:
-    text = text.lower().strip()
-    text = re.sub(r'[^\w\s-]', '', text)
-    text = re.sub(r'[\s_]+', '-', text)
-    return text[:80]
+    slug = text.lower().strip()
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+    slug = re.sub(r'[\s_]+', '-', slug)
+    slug = slug.strip('-')[:80]
+    return slug
 
 
 def _article_to_markdown(article: dict) -> str:
@@ -91,22 +92,22 @@ def remember(article: dict) -> bool:
     """Write article to brain and sync to GBrain index."""
     article_id = article.get("id", "unknown")
     title = article.get("title", "Untitled")
-    slug = _slugify(title) or article_id
+    slug = _slugify(title) or f"article-{article_id[:8]}"
 
     ARTICLES_DIR.mkdir(parents=True, exist_ok=True)
     md_path = ARTICLES_DIR / f"{slug}.md"
     md_path.write_text(_article_to_markdown(article), encoding="utf-8")
 
-    code, out, err = _run(["sync", str(BRAIN_DIR), "--no-embed"])
+    code, out, err = _run(["import", str(ARTICLES_DIR), "--no-embed"])
     if code != 0:
-        print(f"[memory] sync warning: {err}")
+        print(f"[memory] import warning: {err}")
 
     return code == 0
 
 
 def embed_stale() -> bool:
     """Generate embeddings for newly synced content (requires OPENAI_API_KEY)."""
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("VOYAGE_API_KEY")):
         return False
     code, out, err = _run(["embed", "--stale"])
     return code == 0
@@ -159,7 +160,7 @@ def write_page(slug: str, title: str, body: str, subdir: str = "insights") -> bo
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     content = f"---\ntitle: \"{title}\"\ndate: {date}\n---\n\n# {title}\n\n{body}\n"
     (target_dir / f"{slug}.md").write_text(content, encoding="utf-8")
-    code, _, err = _run(["sync", str(BRAIN_DIR), "--no-embed"])
+    code, _, err = _run(["import", str(target_dir), "--no-embed"])
     return code == 0
 
 

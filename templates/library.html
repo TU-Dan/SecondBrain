@@ -856,6 +856,22 @@
             margin-bottom: 18px;
         }
 
+        .btn-back-view {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 13px;
+            color: var(--text-2);
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 4px 8px 4px 4px;
+            border-radius: 6px;
+            transition: color 0.15s, background 0.15s;
+        }
+        .btn-back-view:hover { color: var(--text); background: var(--surface-2); }
+        .btn-back-view svg { width: 14px; height: 14px; }
+
         .inbox-title {
             font-size: 22px;
             font-weight: 600;
@@ -1125,6 +1141,10 @@
         <!-- Notes view -->
         <div class="notes-view" id="notes-view">
             <div class="inbox-header">
+                <button class="btn-back-view" onclick="switchView('library')">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                    知识库
+                </button>
                 <span class="inbox-title">我的笔记</span>
             </div>
             <div class="notes-grid" id="notes-content">
@@ -1135,6 +1155,10 @@
         <!-- Inbox view -->
         <div class="inbox-view" id="inbox-view">
             <div class="inbox-header">
+                <button class="btn-back-view" onclick="switchView('library')">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                    知识库
+                </button>
                 <span class="inbox-title">收件箱</span>
                 <button class="btn-refresh" id="refresh-btn" onclick="refreshFeeds()">
                     <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
