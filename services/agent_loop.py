@@ -95,6 +95,21 @@ TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_url",
+            "description": "抓取一个网页的文字内容，用于主动获取外部知识、验证新概念、补充大脑中没有的背景信息。遇到不熟悉的概念或需要最新信息时优先使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "要抓取的网页 URL，必须是完整 URL（含 https://）"},
+                    "max_chars": {"type": "integer", "description": "最大返回字符数，默认3000", "default": 3000}
+                },
+                "required": ["url"]
+            }
+        }
+    },
 ]
 
 TOOL_THINKING = {
@@ -103,6 +118,7 @@ TOOL_THINKING = {
     "write_insight": lambda args: f"写入洞察：{args.get('title', '')}",
     "list_recent_articles": lambda args: "查看最近文章…",
     "get_brain_stats": lambda args: "读取大脑统计…",
+    "fetch_url": lambda args: f"抓取网页：{args.get('url', '')}",
 }
 
 # ── 工具执行 ─────────────────────────────────────────────────────────────────
@@ -145,16 +161,32 @@ def _execute_tool(name: str, args: dict) -> str:
         stats = memory.stats()
         return json.dumps(stats, ensure_ascii=False, indent=2) if stats else "无法获取统计信息。"
 
+    elif name == "fetch_url":
+        url = args.get("url", "").strip()
+        if not url or not url.startswith("http"):
+            return "无效 URL，请提供完整的 https:// 开头的地址。"
+        max_chars = args.get("max_chars", 3000)
+        try:
+            from services.extractor import extract_content
+            content, title, _ = extract_content(url)
+            if not content:
+                return f"无法提取页面内容：{url}"
+            header = f"**{title}**\n来源：{url}\n\n" if title else f"来源：{url}\n\n"
+            return header + content[:max_chars]
+        except Exception as e:
+            return f"抓取失败：{e}"
+
     return f"未知工具：{name}"
 
 
 # ── Agent Loop ────────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """你是用户的第二大脑助手。你可以调用工具检索、综合、写入用户的个人知识库。
+SYSTEM_PROMPT = """你是用户的第二大脑助手。你可以调用工具检索、综合、写入用户的个人知识库，也可以主动抓取外部网页补充知识。
 
 行为准则：
 - 先思考需要哪些信息，再调用工具。
 - 不要假设，用 recall 或 list_recent_articles 获取真实数据。
+- 遇到大脑中没有的概念或需要最新信息时，主动用 fetch_url 抓取外部资料。
 - 综合分析后，如果产生了有价值的洞察，主动用 write_insight 写回大脑。
 - 回答简洁、有见地，避免废话。
 - 用中文回答。"""

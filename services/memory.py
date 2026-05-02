@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 GBrain memory bridge.
 Writes articles as markdown into brain/, syncs via gbrain CLI,
@@ -20,11 +22,15 @@ DAILY_DIR = BRAIN_DIR / "daily"
 
 def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     env = {**os.environ, "PATH": f"{Path.home() / '.bun' / 'bin'}:{os.environ.get('PATH', '')}"}
-    result = subprocess.run(
-        [str(GBRAIN_BIN)] + args,
-        capture_output=True, text=True, env=env,
-        cwd=cwd or str(BRAIN_DIR)
-    )
+    try:
+        result = subprocess.run(
+            [str(GBRAIN_BIN)] + args,
+            capture_output=True, text=True, env=env,
+            cwd=cwd or str(BRAIN_DIR),
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", "gbrain command timed out"
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 

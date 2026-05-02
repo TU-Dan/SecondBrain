@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 from datetime import datetime
 from dotenv import load_dotenv
@@ -37,14 +38,15 @@ from services.feeds import refresh_all_feeds, refresh_feed, resolve_feed_url
 
 
 def _remember_in_bg(article_id: str):
-    """Background: index article into GBrain memory, then trigger agent analysis."""
+    """Background: index article into GBrain, queue ReAct analysis via task queue."""
     from services.db import get_article
     from services import memory
-    from services.agent_loop import on_article_added
+    from services.agent_tasks import enqueue_article_evolution
     article = get_article(article_id)
     if article:
         memory.remember(article)
-        on_article_added(article)
+        enqueue_article_evolution(article_id)
+        # connect_article task now runs agent_loop ReAct — no direct on_article_added call
 
 
 def _retag_untagged():
@@ -367,7 +369,7 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
             update_job(job_id, "publishing", f"内容生成完成，正在发布到 GitHub Pages...")
             try:
                 result = subprocess.run(
-                    ["python3", "scripts/publish_to_pages.py"],
+                    [sys.executable, "scripts/publish_to_pages.py"],
                     capture_output=True, text=True, timeout=300
                 )
                 if result.returncode == 0:
@@ -591,6 +593,92 @@ async def api_brain_stats():
     return JSONResponse(memory.stats())
 
 
+@app.get("/api/agent/tasks")
+async def api_agent_tasks(status: str = None, limit: int = 50):
+    from services import db
+    return JSONResponse(db.list_agent_tasks(status=status, limit=limit))
+
+
+@app.post("/api/agent/tasks/{task_id}/run")
+async def api_run_agent_task(task_id: str):
+    from services import agent_tasks
+    result = await asyncio.to_thread(agent_tasks.run_task_now, task_id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.get("/api/agent/evolution")
+async def api_evolution_log(limit: int = 80):
+    from services import db
+    return JSONResponse(db.list_evolution_log(limit=limit))
+
+
+@app.get("/api/insights")
+async def api_list_insights():
+    """List all insight markdown files from brain/insights/."""
+    import glob
+    import re as _re
+    insights_dir = os.path.join("brain", "insights")
+    if not os.path.isdir(insights_dir):
+        return JSONResponse([])
+    results = []
+    for path in sorted(glob.glob(os.path.join(insights_dir, "*.md")), reverse=True):
+        slug = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except Exception:
+            continue
+        title = slug
+        date = ""
+        body = raw
+        if raw.startswith("---"):
+            end = raw.find("---", 3)
+            if end != -1:
+                fm = raw[3:end]
+                body = raw[end + 3:].strip()
+                m = _re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', fm, _re.MULTILINE)
+                if m:
+                    title = m.group(1).strip()
+                m = _re.search(r'^date:\s*(.+?)\s*$', fm, _re.MULTILINE)
+                if m:
+                    date = m.group(1).strip()
+        # First non-empty non-heading line as preview
+        preview = ""
+        for line in body.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                preview = line[:160]
+                break
+        results.append({"slug": slug, "title": title, "date": str(date), "preview": preview})
+    return JSONResponse(results)
+
+
+@app.get("/api/insights/{slug}")
+async def api_get_insight(slug: str):
+    """Return full markdown body of a single insight."""
+    import re as _re
+    path = os.path.join("brain", "insights", f"{slug}.md")
+    if not os.path.isfile(path):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    title = slug
+    date = ""
+    body = raw
+    if raw.startswith("---"):
+        end = raw.find("---", 3)
+        if end != -1:
+            fm = raw[3:end]
+            body = raw[end + 3:].strip()
+            m = _re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', fm, _re.MULTILINE)
+            if m:
+                title = m.group(1).strip()
+            m = _re.search(r'^date:\s*(.+?)\s*$', fm, _re.MULTILINE)
+            if m:
+                date = m.group(1).strip()
+    return JSONResponse({"slug": slug, "title": title, "date": str(date), "body": body})
+
+
 @app.post("/api/chat")
 async def api_chat(request: Request):
     """Agent chat — streams NDJSON events (one JSON object per line)."""
@@ -739,6 +827,14 @@ async def api_add_highlight(article_id: str, request: Request):
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
     from services.db import add_highlight
     hid = add_highlight(article_id, text)
+    # Trigger agent analysis in background — highlight = strongest user signal
+    if len(text) >= 20:
+        from services.agent_tasks import enqueue_highlight_analysis
+        threading.Thread(
+            target=enqueue_highlight_analysis,
+            args=(article_id, text),
+            daemon=True,
+        ).start()
     return JSONResponse({"ok": True, "id": hid})
 
 
@@ -809,6 +905,7 @@ async def quick_save_text(request: Request):
         article_md_path=script_url,
         word_count=len(text),
     )
+    threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
     return JSONResponse({"ok": True, "article_id": article_id, "title": title})
 
 
@@ -837,6 +934,7 @@ async def quick_save_url(request: Request):
         image_url=episode_image,
         word_count=len(text),
     )
+    threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
     return JSONResponse({"ok": True, "article_id": article_id, "title": title})
 
 
@@ -958,7 +1056,7 @@ async def publish_to_pages():
         return JSONResponse({"ok": False, "error": "GITHUB_PAGES_URL 未在 .env 中配置"}, status_code=400)
     try:
         result = subprocess.run(
-            ["python3", "scripts/publish_to_pages.py"],
+            [sys.executable, "scripts/publish_to_pages.py"],
             capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:
