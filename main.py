@@ -612,6 +612,73 @@ async def api_evolution_log(limit: int = 80):
     return JSONResponse(db.list_evolution_log(limit=limit))
 
 
+@app.get("/api/insights")
+async def api_list_insights():
+    """List all insight markdown files from brain/insights/."""
+    import glob
+    import re as _re
+    insights_dir = os.path.join("brain", "insights")
+    if not os.path.isdir(insights_dir):
+        return JSONResponse([])
+    results = []
+    for path in sorted(glob.glob(os.path.join(insights_dir, "*.md")), reverse=True):
+        slug = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                raw = f.read()
+        except Exception:
+            continue
+        title = slug
+        date = ""
+        body = raw
+        if raw.startswith("---"):
+            end = raw.find("---", 3)
+            if end != -1:
+                fm = raw[3:end]
+                body = raw[end + 3:].strip()
+                m = _re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', fm, _re.MULTILINE)
+                if m:
+                    title = m.group(1).strip()
+                m = _re.search(r'^date:\s*(.+?)\s*$', fm, _re.MULTILINE)
+                if m:
+                    date = m.group(1).strip()
+        # First non-empty non-heading line as preview
+        preview = ""
+        for line in body.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                preview = line[:160]
+                break
+        results.append({"slug": slug, "title": title, "date": str(date), "preview": preview})
+    return JSONResponse(results)
+
+
+@app.get("/api/insights/{slug}")
+async def api_get_insight(slug: str):
+    """Return full markdown body of a single insight."""
+    import re as _re
+    path = os.path.join("brain", "insights", f"{slug}.md")
+    if not os.path.isfile(path):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    title = slug
+    date = ""
+    body = raw
+    if raw.startswith("---"):
+        end = raw.find("---", 3)
+        if end != -1:
+            fm = raw[3:end]
+            body = raw[end + 3:].strip()
+            m = _re.search(r'^title:\s*["\']?(.+?)["\']?\s*$', fm, _re.MULTILINE)
+            if m:
+                title = m.group(1).strip()
+            m = _re.search(r'^date:\s*(.+?)\s*$', fm, _re.MULTILINE)
+            if m:
+                date = m.group(1).strip()
+    return JSONResponse({"slug": slug, "title": title, "date": str(date), "body": body})
+
+
 @app.post("/api/chat")
 async def api_chat(request: Request):
     """Agent chat — streams NDJSON events (one JSON object per line)."""

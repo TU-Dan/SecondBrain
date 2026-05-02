@@ -798,9 +798,104 @@
 
         @keyframes shimmer { to { background-position: -200% 0; } }
 
-        /* Inbox / Notes views */
-        .inbox-view, .notes-view, .evolution-view { display: none; }
-        .inbox-view.active, .notes-view.active, .evolution-view.active { display: block; }
+        /* Inbox / Notes / Insights views */
+        .inbox-view, .notes-view, .evolution-view, .insights-view { display: none; }
+        .inbox-view.active, .notes-view.active, .evolution-view.active, .insights-view.active { display: block; }
+
+        /* Insights grid */
+        .insights-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 14px;
+            padding: 4px 0 24px;
+        }
+        .insight-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px 18px;
+            cursor: pointer;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        .insight-card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 2px 12px color-mix(in srgb, var(--accent) 18%, transparent);
+        }
+        .insight-card-title {
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+        .insight-card-date {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+        .insight-card-preview {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.55;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        /* Insight modal */
+        .insight-modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,.55);
+            z-index: 300;
+            align-items: flex-start;
+            justify-content: center;
+            padding: 40px 20px;
+            overflow-y: auto;
+        }
+        .insight-modal-overlay.open { display: flex; }
+        .insight-modal {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 32px 36px;
+            max-width: 680px;
+            width: 100%;
+            position: relative;
+        }
+        .insight-modal-close {
+            position: absolute;
+            top: 16px; right: 16px;
+            background: none; border: none;
+            color: var(--text-muted); cursor: pointer;
+            font-size: 18px; padding: 4px;
+        }
+        .insight-modal-close:hover { color: var(--text); }
+        .insight-modal-title {
+            font-size: 17px; font-weight: 700;
+            color: var(--text); margin-bottom: 6px;
+        }
+        .insight-modal-date {
+            font-size: 11.5px; color: var(--text-muted); margin-bottom: 20px;
+        }
+        .insight-modal-body {
+            font-size: 13.5px; line-height: 1.75; color: var(--text-muted);
+        }
+        .insight-modal-body h1, .insight-modal-body h2, .insight-modal-body h3 {
+            color: var(--text); font-weight: 600; margin: 18px 0 8px;
+        }
+        .insight-modal-body h1 { font-size: 16px; }
+        .insight-modal-body h2 { font-size: 14.5px; }
+        .insight-modal-body h3 { font-size: 13.5px; }
+        .insight-modal-body p { margin: 8px 0; }
+        .insight-modal-body ul, .insight-modal-body ol { padding-left: 20px; margin: 8px 0; }
+        .insight-modal-body li { margin: 4px 0; }
+        .insight-modal-body strong { color: var(--text); font-weight: 600; }
+        .insight-modal-body table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+        .insight-modal-body th, .insight-modal-body td { border: 1px solid var(--border); padding: 6px 10px; font-size: 12.5px; }
+        .insight-modal-body th { background: var(--surface); font-weight: 600; color: var(--text); }
         .library-view.hidden { display: none; }
 
         .notes-grid {
@@ -1148,6 +1243,11 @@
             我的笔记
             <span class="nav-badge" id="notes-count"></span>
         </button>
+        <button class="nav-item" id="nav-insights" onclick="switchView('insights')">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-2.26C4.19 13.47 3 11.38 3 9a7 7 0 0 1 7-7z"/></svg>
+            洞察
+            <span class="nav-badge" id="insights-count"></span>
+        </button>
         <button class="nav-item" id="nav-evolution" onclick="switchView('evolution')">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><path d="M14 7h5v5"/></svg>
             大脑演化
@@ -1257,6 +1357,24 @@
             </div>
         </div>
 
+        <!-- Insights view -->
+        <div class="insights-view" id="insights-view">
+            <div class="inbox-header">
+                <button class="btn-back-view" onclick="switchView('library')">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                    知识库
+                </button>
+                <span class="inbox-title">洞察</span>
+                <button class="btn-refresh" onclick="loadInsights()">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    刷新
+                </button>
+            </div>
+            <div class="insights-grid" id="insights-grid">
+                <div class="loading"><div class="spinner"></div> 加载中...</div>
+            </div>
+        </div>
+
         <!-- Evolution view -->
         <div class="evolution-view" id="evolution-view">
             <div class="inbox-header">
@@ -1286,6 +1404,16 @@
             </div>
         </div>
     </main>
+</div>
+
+<!-- Insight detail modal -->
+<div class="insight-modal-overlay" id="insight-modal" onclick="closeInsightModal()">
+    <div class="insight-modal" onclick="event.stopPropagation()">
+        <button class="insight-modal-close" onclick="closeInsightModal()">✕</button>
+        <div class="insight-modal-title" id="insight-modal-title"></div>
+        <div class="insight-modal-date" id="insight-modal-date"></div>
+        <div class="insight-modal-body" id="insight-modal-body"></div>
+    </div>
 </div>
 
 <!-- Feed management modal -->
@@ -1687,13 +1815,96 @@
         document.getElementById('inbox-view').classList.toggle('active', view === 'inbox');
         document.getElementById('notes-view').classList.toggle('active', view === 'notes');
         document.getElementById('evolution-view').classList.toggle('active', view === 'evolution');
+        document.getElementById('insights-view').classList.toggle('active', view === 'insights');
         document.getElementById('brief-card').style.display = view === 'library' ? '' : 'none';
         document.getElementById('nav-inbox').classList.toggle('active', view === 'inbox');
         document.getElementById('nav-notes').classList.toggle('active', view === 'notes');
         document.getElementById('nav-evolution').classList.toggle('active', view === 'evolution');
+        document.getElementById('nav-insights').classList.toggle('active', view === 'insights');
         if (view === 'inbox') { clearTags(); loadInbox(); }
         if (view === 'notes') { clearTags(); loadNotes(); }
         if (view === 'evolution') { clearTags(); loadEvolution(); }
+        if (view === 'insights') { clearTags(); loadInsights(); }
+    }
+
+    // ── Insights ─────────────────────────────────────────────────────────────
+    async function loadInsights() {
+        const grid = document.getElementById('insights-grid');
+        grid.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
+        try {
+            const items = await fetch('/api/insights').then(r => r.json());
+            document.getElementById('insights-count').textContent = items.length || '';
+            if (!items.length) {
+                grid.innerHTML = '<div class="empty"><p>还没有洞察。Agent 分析文章后会自动生成洞察写入大脑。</p></div>';
+                return;
+            }
+            grid.innerHTML = items.map(ins => `
+                <div class="insight-card" onclick="openInsight('${escapeHtml(ins.slug)}')">
+                    <div class="insight-card-title">${escapeHtml(ins.title)}</div>
+                    ${ins.date ? `<div class="insight-card-date">${escapeHtml(ins.date)}</div>` : ''}
+                    <div class="insight-card-preview">${escapeHtml(ins.preview)}</div>
+                </div>
+            `).join('');
+        } catch(e) {
+            grid.innerHTML = '<div class="empty"><p>加载失败，请刷新重试。</p></div>';
+        }
+    }
+
+    async function openInsight(slug) {
+        try {
+            const ins = await fetch(`/api/insights/${encodeURIComponent(slug)}`).then(r => r.json());
+            document.getElementById('insight-modal-title').textContent = ins.title;
+            document.getElementById('insight-modal-date').textContent = ins.date || '';
+            document.getElementById('insight-modal-body').innerHTML = renderInsightMd(ins.body || '');
+            document.getElementById('insight-modal').classList.add('open');
+        } catch(e) {
+            console.error('openInsight error', e);
+        }
+    }
+
+    function closeInsightModal() {
+        document.getElementById('insight-modal').classList.remove('open');
+    }
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeInsightModal();
+    });
+
+    function renderInsightMd(text) {
+        // Simple markdown renderer for the modal
+        let html = escapeHtml(text);
+        // Headings
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        // Bold
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        // Bullet lists
+        html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>(\n|$))+/g, m => `<ul>${m}</ul>`);
+        // Table rows
+        html = html.replace(/^\|(.+)\|$/gm, row => {
+            const cells = row.slice(1, -1).split('|');
+            return '<tr>' + cells.map(c => `<td>${c.trim()}</td>`).join('') + '</tr>';
+        });
+        html = html.replace(/(<tr>.*<\/tr>(\n|$))+/g, m => {
+            // promote first row to thead if it's a header separator pattern
+            const rows = m.trim().split('\n').filter(r => r.startsWith('<tr>'));
+            if (rows.length >= 2 && rows[1] && rows[1].replace(/<[^>]+>/g,'').trim().match(/^[-| :]+$/)) {
+                const head = rows[0].replace(/<td>/g,'<th>').replace(/<\/td>/g,'</th>');
+                const body = rows.slice(2).join('\n');
+                return `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+            }
+            return `<table>${m}</table>`;
+        });
+        // Paragraphs (blank-line separated)
+        html = html.replace(/\n\n+/g, '</p><p>');
+        html = '<p>' + html + '</p>';
+        // Clean up empty paragraphs
+        html = html.replace(/<p>\s*<\/p>/g, '');
+        html = html.replace(/<p>(<[hut])/g, '$1');
+        html = html.replace(/(<\/[hut][a-z]*>)<\/p>/g, '$1');
+        return html;
     }
 
     function formatDateTime(value) {
