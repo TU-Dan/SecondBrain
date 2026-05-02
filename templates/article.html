@@ -310,6 +310,57 @@
         .resize-handle:hover,
         .resize-handle.dragging { background: var(--accent); }
 
+        .agent-resize-handle {
+            width: 4px;
+            background: var(--border);
+            cursor: col-resize;
+            flex-shrink: 0;
+            transition: background 0.15s;
+        }
+
+        .agent-resize-handle:hover,
+        .agent-resize-handle.dragging {
+            background: var(--accent);
+        }
+
+        .agent-resize-handle.hidden {
+            display: none;
+        }
+
+        .agent-sidebar {
+            width: 392px;
+            flex: 0 0 392px;
+            min-width: 320px;
+            max-width: 42vw;
+            border-left: 1px solid var(--border);
+            background: var(--surface);
+            backdrop-filter: blur(18px) saturate(130%);
+            -webkit-backdrop-filter: blur(18px) saturate(130%);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .agent-sidebar.hidden {
+            display: none;
+        }
+
+        @media (max-width: 1180px) {
+            .agent-sidebar {
+                flex-basis: 340px;
+                width: 340px;
+            }
+        }
+
+        @media (max-width: 920px) {
+            .agent-sidebar {
+                flex-basis: 320px;
+                width: 320px;
+                min-width: 300px;
+                max-width: none;
+            }
+        }
+
         /* Editor */
         .editor {
             flex: 1;
@@ -1199,6 +1250,9 @@
             </div>
         </div>
     </div>
+
+    <div class="agent-resize-handle hidden" id="agent-resize-handle"></div>
+    <aside class="agent-sidebar hidden" id="brain-inline-panel"></aside>
 </div>
 
 <!-- Selection popup -->
@@ -1330,7 +1384,10 @@
     const panes  = document.getElementById('panes');
     const left   = document.getElementById('pane-left');
     const right  = document.getElementById('pane-right');
+    const agentHandle = document.getElementById('agent-resize-handle');
+    const agentPane = document.getElementById('brain-inline-panel');
     let dragging = false;
+    let draggingAgent = false;
 
     handle.addEventListener('mousedown', e => {
         dragging = true;
@@ -1340,23 +1397,55 @@
     });
 
     document.addEventListener('mousemove', e => {
-        if (!dragging) return;
-        const rect = panes.getBoundingClientRect();
-        const ratio = (e.clientX - rect.left) / rect.width;
-        const clamped = Math.min(Math.max(ratio, 0.2), 0.8);
-        left.style.flex = 'none';
-        left.style.width = (clamped * 100) + '%';
-        right.style.flex = '1';
-        right.style.width = 'auto';
+        if (dragging) {
+            const rect = panes.getBoundingClientRect();
+            const agentWidth = agentPane ? agentPane.getBoundingClientRect().width : 0;
+            const availableWidth = rect.width - agentWidth;
+            const ratio = (e.clientX - rect.left) / availableWidth;
+            const clamped = Math.min(Math.max(ratio, 0.2), 0.8);
+            left.style.flex = 'none';
+            left.style.width = (clamped * availableWidth) + 'px';
+            right.style.flex = '1';
+            right.style.width = 'auto';
+            return;
+        }
+        if (draggingAgent && agentPane) {
+            const rect = panes.getBoundingClientRect();
+            const maxWidth = Math.min(720, rect.width * 0.62);
+            const width = Math.min(Math.max(rect.right - e.clientX, 300), maxWidth);
+            agentPane.style.flex = `0 0 ${width}px`;
+            agentPane.style.width = `${width}px`;
+            localStorage.setItem('brain-inline-width', String(Math.round(width)));
+        }
     });
 
     document.addEventListener('mouseup', () => {
-        if (!dragging) return;
-        dragging = false;
-        handle.classList.remove('dragging');
+        if (!dragging && !draggingAgent) return;
+        if (dragging) {
+            dragging = false;
+            handle.classList.remove('dragging');
+        }
+        if (draggingAgent) {
+            draggingAgent = false;
+            agentHandle.classList.remove('dragging');
+        }
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
     });
+
+    agentHandle.addEventListener('mousedown', e => {
+        draggingAgent = true;
+        agentHandle.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+    });
+
+    const savedAgentWidth = Number(localStorage.getItem('brain-inline-width'));
+    if (savedAgentWidth && agentPane) {
+        const width = Math.min(Math.max(savedAgentWidth, 300), 720);
+        agentPane.style.flex = `0 0 ${width}px`;
+        agentPane.style.width = `${width}px`;
+    }
 
     // Tags
     let currentTags = [];
