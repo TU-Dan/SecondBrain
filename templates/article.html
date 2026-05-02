@@ -921,6 +921,61 @@
             position: relative;
         }
 
+        .insight-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 4px 0;
+            position: relative;
+        }
+
+        .insight-section-label {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.7px;
+            color: var(--text-muted);
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .insight-agent-body {
+            font-size: 12.5px;
+            color: var(--text);
+            opacity: 0.88;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            word-break: break-word;
+            position: relative;
+        }
+        .insight-agent-body strong { font-weight: 600; }
+
+        .insight-highlights {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            position: relative;
+        }
+        .insight-highlight-item {
+            background: rgba(74,103,65,0.06);
+            border-left: 2px solid var(--accent-2, #c49a6c);
+            border-radius: 4px;
+            padding: 7px 10px;
+        }
+        .insight-highlight-quote {
+            font-size: 11.5px;
+            font-style: italic;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            line-height: 1.5;
+        }
+        .insight-highlight-analysis {
+            font-size: 12px;
+            color: var(--text);
+            line-height: 1.6;
+        }
+
         /* Notes panel */
         .notes-panel {
             flex: 1;
@@ -1518,14 +1573,62 @@
     function renderInsights(ins) {
         const body = document.getElementById('insights-body');
         body.className = '';
-        body.innerHTML = `
-            <div class="insight-core">${ins.core}</div>
-            <ul class="insight-list">
-                ${ins.insights.map(i => `<li>${i}</li>`).join('')}
-            </ul>
-            <div class="insight-counter">💡 ${ins.counterintuitive}</div>
-        `;
+        let html = '';
+
+        // LLM-extracted structured insights
+        if (ins.core) {
+            html += `<div class="insight-core">${ins.core}</div>`;
+        }
+        if (ins.insights && ins.insights.length) {
+            html += `<ul class="insight-list">${ins.insights.map(i => `<li>${i}</li>`).join('')}</ul>`;
+        }
+        if (ins.counterintuitive) {
+            html += `<div class="insight-counter">💡 ${ins.counterintuitive}</div>`;
+        }
+
+        // Agent ReAct cross-reference analysis
+        if (ins.agent_analysis) {
+            if (html) html += '<hr class="insight-divider">';
+            html += `
+                <div class="insight-section-label">
+                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:10px;height:10px"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    Agent 分析
+                </div>
+                <div class="insight-agent-body">${renderMd(ins.agent_analysis)}</div>`;
+        }
+
+        // Highlight-triggered analyses
+        if (ins.highlight_analyses && ins.highlight_analyses.length) {
+            if (html) html += '<hr class="insight-divider">';
+            html += `<div class="insight-section-label">
+                <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="width:10px;height:10px"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                高亮分析
+            </div><div class="insight-highlights">`;
+            for (const h of ins.highlight_analyses) {
+                html += `<div class="insight-highlight-item">
+                    <div class="insight-highlight-quote">「${h.text}」</div>
+                    <div class="insight-highlight-analysis">${h.analysis}</div>
+                </div>`;
+            }
+            html += '</div>';
+        }
+
+        if (!html) {
+            body.className = 'insights-empty';
+            body.innerHTML = '点击「生成洞见」提取文章核心';
+            return;
+        }
+
+        body.innerHTML = html;
         document.getElementById('insights-btn').textContent = '重新生成';
+    }
+
+    function renderMd(text) {
+        if (!text) return '';
+        return text
+            .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+            .replace(/\n/g,'<br>');
     }
 
     async function generateInsights() {
@@ -1556,8 +1659,11 @@
             const res = await fetch(`/api/articles/${ARTICLE_ID}`);
             const data = await res.json();
             if (data.insights) {
-                const ins = JSON.parse(data.insights);
-                if (ins && ins.core) renderInsights(ins);
+                const ins = typeof data.insights === 'string'
+                    ? JSON.parse(data.insights) : data.insights;
+                if (ins && (ins.core || ins.agent_analysis || ins.highlight_analyses)) {
+                    renderInsights(ins);
+                }
             }
         } catch(e) {}
     }
