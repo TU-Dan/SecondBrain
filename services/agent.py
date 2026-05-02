@@ -88,6 +88,17 @@ async def task_sync_unindexed_articles():
         log.error(f"[agent] backfill error: {e}")
 
 
+async def task_run_agent_queue():
+    """Run one queued autonomous evolution task."""
+    try:
+        from services import agent_tasks
+        result = await asyncio.to_thread(agent_tasks.run_next)
+        if result:
+            log.info(f"[agent] task queue result: {result}")
+    except Exception as e:
+        log.error(f"[agent] task queue error: {e}")
+
+
 # ── Scheduler lifecycle ───────────────────────────────────────────────────────
 
 def start():
@@ -104,6 +115,10 @@ def start():
     # After each sync: embed new content (no-op without OpenAI key)
     _scheduler.add_job(task_embed_stale, "interval", hours=1, id="embed_stale",
                        minutes=5)
+
+    # Every few minutes: run one autonomous task from the queue.
+    _scheduler.add_job(task_run_agent_queue, "interval", minutes=3, id="agent_task_queue",
+                       next_run_time=datetime.now())
 
     # Daily 07:00: brief
     _scheduler.add_job(task_daily_brief, CronTrigger(hour=7, minute=0),

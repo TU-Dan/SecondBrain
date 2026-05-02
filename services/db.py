@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sqlite3
 import json
 import os
@@ -83,6 +85,45 @@ def init_db():
                 content TEXT,
                 created_at TEXT
             )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                payload_json TEXT DEFAULT '{}',
+                status TEXT DEFAULT 'pending',
+                priority INTEGER DEFAULT 50,
+                attempts INTEGER DEFAULT 0,
+                scheduled_at TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                result_json TEXT,
+                error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_schedule
+            ON agent_tasks(status, scheduled_at, priority)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS evolution_log (
+                id TEXT PRIMARY KEY,
+                task_id TEXT,
+                event_type TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                before_json TEXT,
+                after_json TEXT,
+                artifact_type TEXT,
+                artifact_id TEXT,
+                created_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_evolution_log_created
+            ON evolution_log(created_at)
         """)
         conn.commit()
     _scan_scripts_dir()
@@ -464,3 +505,134 @@ def delete_output(output_id: str):
     with get_conn() as conn:
         conn.execute("DELETE FROM outputs WHERE id=?", (output_id,))
         conn.commit()
+
+
+# ── Agent tasks & evolution log ──────────────────────────────────────────────
+
+def enqueue_agent_task(
+    task_type: str,
+    title: str,
+    payload: dict = None,
+    priority: int = 50,
+    scheduled_at: str = None,
+) -> str:
+    task_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    scheduled = scheduled_at or now
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO agent_tasks
+               (id, type, title, payload_json, status, priority, attempts,
+                scheduled_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                task_id,
+                task_type,
+                title,
+                json.dumps(payload or {}, ensure_ascii=False),
+                "pending",
+                priority,
+                0,
+                scheduled,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    return task_id
+
+
+def list_agent_tasks(status: str = None, limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM agent_tasks WHERE status=? ORDER BY priority DESC, scheduled_at ASC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM agent_tasks ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_next_agent_task():
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT * FROM agent_tasks
+               WHERE status='pending' AND scheduled_at <= ?
+               ORDER BY priority DESC, scheduled_at ASC, created_at ASC
+               LIMIT 1""",
+            (now,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_agent_task(task_id: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM agent_tasks WHERE id=?", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_agent_task(task_id: str, **fields):
+    allowed = {
+        "status", "attempts", "started_at", "finished_at",
+        "result_json", "error", "updated_at",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    columns = ", ".join(f"{k}=?" for k in updates)
+    values = list(updates.values()) + [task_id]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE agent_tasks SET {columns} WHERE id=?", values)
+        conn.commit()
+
+
+def add_evolution_log(
+    event_type: str,
+    summary: str,
+    task_id: str = None,
+    before: dict = None,
+    after: dict = None,
+    artifact_type: str = None,
+    artifact_id: str = None,
+) -> str:
+    log_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO evolution_log
+               (id, task_id, event_type, summary, before_json, after_json,
+                artifact_type, artifact_id, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                log_id,
+                task_id,
+                event_type,
+                summary,
+                json.dumps(before, ensure_ascii=False) if before is not None else None,
+                json.dumps(after, ensure_ascii=False) if after is not None else None,
+                artifact_type,
+                artifact_id,
+                now,
+            ),
+        )
+        conn.commit()
+    return log_id
+
+
+def list_evolution_log(limit: int = 80) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT l.*, t.type AS task_type, t.title AS task_title, t.status AS task_status
+               FROM evolution_log l
+               LEFT JOIN agent_tasks t ON t.id = l.task_id
+               ORDER BY l.created_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
