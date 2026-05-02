@@ -1,7 +1,6 @@
 """
-Autonomous agent loop.
-Runs on a schedule: hourly RSS sync, daily brief, weekly synthesis.
-All compounding into GBrain memory.
+Autonomous agent — event-driven scheduler.
+Triggers agent_loop.run() for reasoning tasks instead of hardcoded logic.
 """
 
 import asyncio
@@ -10,7 +9,7 @@ from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from services import db, memory, llm
+from services import db, memory
 from services.feeds import refresh_all_feeds
 
 log = logging.getLogger("agent")
@@ -37,49 +36,38 @@ async def task_embed_stale():
 
 
 async def task_daily_brief():
-    """07:00 daily: pull recent articles from brain, synthesize brief, save back."""
-    log.info("[agent] generating daily brief...")
+    """07:00 daily: agent自主决定今日简报内容并写回大脑。"""
+    log.info("[agent] running daily brief via agent loop...")
     try:
+        from services.agent_loop import run as agent_run
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        recent = db.list_articles(limit=20)
-        if not recent:
-            return
-
-        # Build context from recent articles
-        brief_text = await asyncio.to_thread(llm.generate_daily_brief, recent[:10])
-        if brief_text:
-            slug = f"daily-{today}"
-            memory.write_page(slug, f"每日简报 {today}", brief_text, subdir="daily")
-            log.info(f"[agent] daily brief saved: {slug}")
+        prompt = (
+            f"今天是 {today}。请查看最近的文章，找出有意思的联系和洞察，"
+            f"写一篇今日知识简报（300-500字），然后用 write_insight 保存到大脑，slug 用 daily-{today}。"
+        )
+        result = await asyncio.to_thread(
+            lambda: next(agent_run(prompt, stream=True), "")
+        )
+        log.info(f"[agent] daily brief done: {result[:80]}")
     except Exception as e:
         log.error(f"[agent] daily brief error: {e}")
 
 
 async def task_weekly_synthesis():
-    """Monday 08:00: synthesize cross-article insights from past week."""
-    log.info("[agent] running weekly synthesis...")
+    """Monday 08:00: agent自主综合本周知识，写洞察。"""
+    log.info("[agent] running weekly synthesis via agent loop...")
     try:
-        recent = db.list_articles(limit=50)
-        if len(recent) < 3:
-            return
-
-        all_tags: dict[str, int] = {}
-        for a in recent:
-            import json
-            try:
-                for t in json.loads(a.get("tags") or "[]"):
-                    all_tags[t] = all_tags.get(t, 0) + 1
-            except Exception:
-                pass
-
-        top_topics = sorted(all_tags, key=lambda t: -all_tags[t])[:5]
-
-        for topic in top_topics:
-            synthesis = await asyncio.to_thread(memory.synthesize, topic)
-            if synthesis:
-                slug = f"synthesis-{topic}-{datetime.now(timezone.utc).strftime('%Y-W%W')}"
-                memory.write_page(slug, f"综合洞察：{topic}", synthesis, subdir="insights")
-                log.info(f"[agent] synthesis saved: {slug}")
+        from services.agent_loop import run as agent_run
+        week = datetime.now(timezone.utc).strftime("%Y-W%W")
+        prompt = (
+            f"现在是第 {week} 周末。请获取大脑统计信息和最近文章，"
+            f"选出最值得深挖的2-3个主题，对每个主题调用 synthesize 综合分析，"
+            f"然后用 write_insight 将每个综合洞察写回大脑。"
+        )
+        result = await asyncio.to_thread(
+            lambda: next(agent_run(prompt, stream=True), "")
+        )
+        log.info(f"[agent] weekly synthesis done: {result[:80]}")
     except Exception as e:
         log.error(f"[agent] weekly synthesis error: {e}")
 

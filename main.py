@@ -1,8 +1,9 @@
 import asyncio
+import json
 import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, File, UploadFile, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import os
@@ -359,7 +360,7 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
             try:
                 result = subprocess.run(
                     ["python3", "scripts/publish_to_pages.py"],
-                    capture_output=True, text=True, timeout=120
+                    capture_output=True, text=True, timeout=300
                 )
                 if result.returncode == 0:
                     update_job(job_id, "done", f"全部完成！已发布到 GitHub Pages。")
@@ -580,6 +581,42 @@ async def api_brain_stats():
     """GBrain memory statistics."""
     from services import memory
     return JSONResponse(memory.stats())
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """Agent chat — streams NDJSON events (one JSON object per line)."""
+    from services.agent_loop import run_stream
+    import queue as _queue
+
+    body = await request.json()
+    message = body.get("message", "").strip()
+    history = body.get("history", [])
+
+    if not message:
+        return JSONResponse({"error": "message required"}, status_code=400)
+
+    async def generate():
+        loop = asyncio.get_event_loop()
+        q: _queue.Queue = _queue.Queue()
+
+        def _run():
+            try:
+                for event in run_stream(message, history=history):
+                    q.put(event)
+            finally:
+                q.put(None)
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        while True:
+            event = await loop.run_in_executor(None, q.get)
+            if event is None:
+                break
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson; charset=utf-8")
 
 
 @app.get("/api/articles/{article_id}/outputs")
@@ -914,7 +951,7 @@ async def publish_to_pages():
     try:
         result = subprocess.run(
             ["python3", "scripts/publish_to_pages.py"],
-            capture_output=True, text=True, timeout=120
+            capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:
             return JSONResponse({"ok": False, "error": result.stderr or result.stdout})

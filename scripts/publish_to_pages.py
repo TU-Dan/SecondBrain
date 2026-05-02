@@ -48,20 +48,19 @@ def branch_exists_remote() -> bool:
 
 def init_gh_pages():
     """Create an orphan gh-pages branch and push it."""
+    import tempfile
     print("Initializing gh-pages branch...")
-    tmp = ".gh-pages-init"
 
-    # Clean up if leftover
-    if Path(tmp).exists():
-        run(f"git worktree remove --force {tmp}", check=False)
-
-    run(f"git worktree add --orphan -b gh-pages {tmp}")
-    Path(f"{tmp}/.nojekyll").touch()
-    Path(f"{tmp}/audio").mkdir(exist_ok=True)
-    run(f"git -C {tmp} add .")
-    run(f'git -C {tmp} commit -m "Initialize GitHub Pages for podcast hosting"')
-    run("git push origin gh-pages")
-    run(f"git worktree remove {tmp}")
+    remote = run("git remote get-url origin")
+    with tempfile.TemporaryDirectory() as tmp:
+        run(f"git -C {tmp} init")
+        run(f"git -C {tmp} checkout -b gh-pages")
+        Path(f"{tmp}/.nojekyll").touch()
+        Path(f"{tmp}/audio").mkdir(exist_ok=True)
+        run(f"git -C {tmp} add .")
+        run(f'git -C {tmp} commit -m "Initialize GitHub Pages for podcast hosting"')
+        run(f"git -C {tmp} remote add origin {remote}")
+        run(f"git -C {tmp} push origin gh-pages")
     print("gh-pages branch created.")
 
 
@@ -76,6 +75,12 @@ def publish() -> str:
     # Init branch if needed
     if not branch_exists_remote():
         init_gh_pages()
+
+    # Ensure local branch tracks remote gh-pages
+    run("git fetch origin gh-pages", check=False)
+    local_branches = run("git branch --list gh-pages")
+    if not local_branches.strip():
+        run("git branch gh-pages origin/gh-pages")
 
     # Clean up any leftover worktree
     if Path(WORKTREE).exists():
