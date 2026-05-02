@@ -1,7 +1,13 @@
 import asyncio
 import json
+import logging
 import threading
 from contextlib import asynccontextmanager
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
 from fastapi import FastAPI, Request, Form, File, UploadFile, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,12 +37,14 @@ from services.feeds import refresh_all_feeds, refresh_feed, resolve_feed_url
 
 
 def _remember_in_bg(article_id: str):
-    """Background: index article into GBrain memory after save."""
+    """Background: index article into GBrain memory, then trigger agent analysis."""
     from services.db import get_article
     from services import memory
+    from services.agent_loop import on_article_added
     article = get_article(article_id)
     if article:
         memory.remember(article)
+        on_article_added(article)
 
 
 def _retag_untagged():

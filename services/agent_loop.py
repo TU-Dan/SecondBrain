@@ -265,3 +265,58 @@ def run(user_message: str, history=None, max_steps: int = 8, stream: bool = Fals
         if event["type"] == "text":
             accumulated.append(event["chunk"])
     return "".join(accumulated)
+
+
+def on_article_added(article: dict):
+    """
+    新文章入库后自动触发。在后台线程中运行。
+    Agent 会：
+    1. 分析文章内容
+    2. 用 recall 找已有知识中的关联
+    3. 生成洞察写回大脑
+    4. 将核心洞察更新到文章的 insights 字段
+    """
+    from services import db
+
+    article_id = article.get("id", "")
+    title = article.get("title", "未知标题")
+    summary = (article.get("summary") or "")[:500]
+    tags = article.get("tags") or "[]"
+
+    if not summary:
+        log.info(f"[agent] skip on_article_added for '{title}' — no summary")
+        return
+
+    prompt = f"""刚刚入库了一篇新文章：《{title}》
+标签：{tags}
+摘要：{summary}
+
+请完成以下任务：
+1. 用 recall 在大脑中搜索与这篇文章相关的已有知识（至少搜索2个不同角度）
+2. 找出这篇文章与已有知识之间最有价值的联系或对比
+3. 提炼出1-2条真正有洞察力的结论，用 write_insight 写回大脑（slug 用 insight-{article_id[:8]}）
+4. 最后用一句话总结：这篇文章为大脑补充了什么新视角
+
+不要复述文章内容，专注于跨文章的联系和新发现。"""
+
+    log.info(f"[agent] analyzing new article: '{title}'")
+    try:
+        result = run(prompt, max_steps=10)
+        log.info(f"[agent] article analysis done: '{title}' — {result[:80]}")
+
+        # 把 agent 分析结果存回 insights 字段（补充而非覆盖）
+        existing = article.get("insights")
+        if existing:
+            try:
+                import json as _json
+                ins = _json.loads(existing) if isinstance(existing, str) else existing
+            except Exception:
+                ins = {}
+        else:
+            ins = {}
+
+        ins["agent_analysis"] = result[:800]
+        db.update_insights(article_id, ins)
+        log.info(f"[agent] insights updated for '{title}'")
+    except Exception as e:
+        log.error(f"[agent] on_article_added error for '{title}': {e}")
