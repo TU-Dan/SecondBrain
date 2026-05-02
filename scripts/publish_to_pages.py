@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Publish podcast audio and RSS feed to GitHub Pages (gh-pages branch).
+Publish podcast audio and RSS feed to the Pages source repository.
 
 Usage:
     python scripts/publish_to_pages.py
 
 Requires GITHUB_PAGES_URL in .env, e.g.:
     GITHUB_PAGES_URL=https://tu-dan.github.io/podcast_generator
+
+Optional:
+    GITHUB_PAGES_REPO=git@github.com:TU-Dan/podcast_generator.git
+    GITHUB_PAGES_BRANCH=gh-pages
 """
 
 import os
@@ -26,13 +30,15 @@ load_dotenv()
 from services.rss import generate_rss_for_export
 
 PAGES_URL = os.getenv("GITHUB_PAGES_URL", "").rstrip("/")
-WORKTREE = ".gh-pages-publish"
+PAGES_REPO = os.getenv("GITHUB_PAGES_REPO", "git@github.com:TU-Dan/podcast_generator.git")
+PAGES_BRANCH = os.getenv("GITHUB_PAGES_BRANCH", "gh-pages")
+WORKTREE = ".pages-publish-workdir"
 
 
-def run(cmd: str, check=True) -> str:
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+def run(cmd: list[str], check=True, cwd: Path | str | None = None) -> str:
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if check and result.returncode != 0:
-        print(f"Command failed: {cmd}")
+        print(f"Command failed: {' '.join(cmd)}")
         print(result.stderr)
         sys.exit(1)
     return result.stdout.strip()
@@ -40,32 +46,32 @@ def run(cmd: str, check=True) -> str:
 
 def branch_exists_remote() -> bool:
     out = subprocess.run(
-        "git ls-remote --heads origin gh-pages",
-        shell=True, capture_output=True, text=True
+        ["git", "ls-remote", "--heads", PAGES_REPO, PAGES_BRANCH],
+        capture_output=True, text=True
     ).stdout
-    return "gh-pages" in out
+    return f"refs/heads/{PAGES_BRANCH}" in out
 
 
 def init_gh_pages():
-    """Create an orphan gh-pages branch and push it."""
+    """Create an orphan Pages branch in the publishing repository."""
     import tempfile
-    print("Initializing gh-pages branch...")
+    print(f"Initializing {PAGES_BRANCH} branch in {PAGES_REPO}...")
 
-    remote = run("git remote get-url origin")
     with tempfile.TemporaryDirectory() as tmp:
-        run(f"git -C {tmp} init")
-        run(f"git -C {tmp} checkout -b gh-pages")
+        tmp_path = Path(tmp)
+        run(["git", "init"], cwd=tmp_path)
+        run(["git", "checkout", "-b", PAGES_BRANCH], cwd=tmp_path)
         Path(f"{tmp}/.nojekyll").touch()
         Path(f"{tmp}/audio").mkdir(exist_ok=True)
-        run(f"git -C {tmp} add .")
-        run(f'git -C {tmp} commit -m "Initialize GitHub Pages for podcast hosting"')
-        run(f"git -C {tmp} remote add origin {remote}")
-        run(f"git -C {tmp} push origin gh-pages")
-    print("gh-pages branch created.")
+        run(["git", "add", "."], cwd=tmp_path)
+        run(["git", "commit", "-m", "Initialize Pages podcast hosting"], cwd=tmp_path)
+        run(["git", "remote", "add", "origin", PAGES_REPO], cwd=tmp_path)
+        run(["git", "push", "-u", "origin", PAGES_BRANCH], cwd=tmp_path)
+    print(f"{PAGES_BRANCH} branch created.")
 
 
 def publish() -> str:
-    """Sync audio files and podcast.xml to gh-pages. Returns public RSS URL."""
+    """Sync audio files and podcast.xml to the Pages repo. Returns public RSS URL."""
     if not PAGES_URL:
         print("Error: GITHUB_PAGES_URL is not set in .env")
         print("Add this line to .env:")
@@ -76,17 +82,19 @@ def publish() -> str:
     if not branch_exists_remote():
         init_gh_pages()
 
-    # Ensure local branch tracks remote gh-pages
-    run("git fetch origin gh-pages", check=False)
-    local_branches = run("git branch --list gh-pages")
-    if not local_branches.strip():
-        run("git branch gh-pages origin/gh-pages")
-
-    # Clean up any leftover worktree
+    # Clean up any leftover checkout
     if Path(WORKTREE).exists():
-        run(f"git worktree remove --force {WORKTREE}", check=False)
+        shutil.rmtree(WORKTREE)
 
-    run(f"git worktree add {WORKTREE} gh-pages")
+    run([
+        "git",
+        "clone",
+        "--branch",
+        PAGES_BRANCH,
+        "--single-branch",
+        PAGES_REPO,
+        WORKTREE,
+    ])
 
     try:
         audio_src = ROOT / "static" / "audio"
@@ -120,20 +128,24 @@ def publish() -> str:
         generate_rss_for_export(PAGES_URL, f"{WORKTREE}/podcast.xml")
         print(f"Generated podcast.xml → {PAGES_URL}/podcast.xml")
 
-        # Commit and push
-        run(f"git -C {WORKTREE} add -A")
+        # Commit and push. Cloudflare Pages deploys from this repository/branch.
+        run(["git", "add", "-A"], cwd=WORKTREE)
         result = subprocess.run(
-            'git -C .gh-pages-publish commit -m "Update podcast episodes"',
-            shell=True, capture_output=True, text=True
+            ["git", "commit", "-m", "Update podcast episodes"],
+            cwd=WORKTREE, capture_output=True, text=True
         )
         if "nothing to commit" in result.stdout:
             print("Nothing new to publish.")
         else:
-            run(f"git -C {WORKTREE} push origin gh-pages")
-            print(f"Published! RSS feed: {PAGES_URL}/podcast.xml")
+            if result.returncode != 0:
+                print(result.stderr or result.stdout)
+                sys.exit(result.returncode)
+            run(["git", "push", "origin", PAGES_BRANCH], cwd=WORKTREE)
+            print(f"Published to {PAGES_REPO}#{PAGES_BRANCH}.")
+            print(f"Cloudflare Pages will deploy: {PAGES_URL}/podcast.xml")
 
     finally:
-        run(f"git worktree remove {WORKTREE}", check=False)
+        shutil.rmtree(WORKTREE, ignore_errors=True)
 
     return f"{PAGES_URL}/podcast.xml"
 
