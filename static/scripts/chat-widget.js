@@ -205,6 +205,53 @@
     }
     .brain-tool.open .brain-tool-body { display:block; }
 
+    /* JS proposal */
+    .brain-proposal {
+      border:1px solid rgba(74,103,65,.35);
+      border-radius:10px; overflow:hidden;
+      background:var(--surface-2,rgba(0,0,0,.035));
+      font-size:12.5px; animation: brain-fade-in .2s ease;
+    }
+    .brain-proposal-head {
+      display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+      padding:10px 12px; border-bottom:1px solid var(--border,rgba(0,0,0,.08));
+    }
+    .brain-proposal-title {
+      font-weight:700; color:var(--text,#1a1a14); font-size:13px; line-height:1.4;
+    }
+    .brain-proposal-risk {
+      flex-shrink:0; padding:2px 7px; border-radius:999px;
+      font-size:10px; text-transform:uppercase; letter-spacing:.3px;
+      background:rgba(74,103,65,.14); color:var(--accent,#4a6741);
+    }
+    .brain-proposal-risk.high { background:rgba(220,68,68,.12); color:#c94444; }
+    .brain-proposal-risk.medium { background:rgba(190,126,26,.12); color:#a96b15; }
+    .brain-proposal-body { padding:10px 12px; color:var(--text,#1a1a14); line-height:1.55; }
+    .brain-proposal-summary { margin-bottom:8px; }
+    .brain-proposal-effects {
+      margin:0 0 9px 15px; padding:0; color:var(--text-muted,#777);
+    }
+    .brain-proposal-code {
+      margin:8px 0 0; padding:8px 9px; border-radius:8px;
+      background:rgba(0,0,0,.06); color:var(--text-muted,#666);
+      white-space:pre-wrap; word-break:break-word; max-height:160px; overflow:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px;
+    }
+    [data-theme="dark"] .brain-proposal-code { background:rgba(255,255,255,.06); }
+    .brain-proposal-actions {
+      display:flex; gap:8px; padding:0 12px 12px;
+    }
+    .brain-proposal-btn {
+      border:1px solid var(--border,rgba(0,0,0,.12)); border-radius:8px;
+      background:transparent; color:var(--text,#1a1a14);
+      padding:7px 10px; cursor:pointer; font:inherit; font-size:12px;
+    }
+    .brain-proposal-btn.primary { background:var(--accent,#4a6741); color:#fff; border-color:var(--accent,#4a6741); }
+    .brain-proposal-btn:disabled { opacity:.45; cursor:not-allowed; }
+    .brain-proposal-status {
+      padding:0 12px 12px; color:var(--text-muted,#777); font-size:12px;
+    }
+
     /* Footer */
     #brain-footer {
       padding:11px 13px; border-top:1px solid var(--border,rgba(0,0,0,.12));
@@ -707,8 +754,18 @@
   // ── DOM 构建助手 ──────────────────────────────────────────────────────────
   const TOOL_ICONS = {
     recall: '🔍', synthesize: '🧠', write_insight: '✏️',
+    find_articles: '📄', get_article_content: '📖',
+    save_article: '📄',
+    translate_article_chinese_section: '🌐',
     list_recent_articles: '📚', get_brain_stats: '📊',
+    propose_js: '🧩',
   };
+
+  function esc(text) {
+    return String(text || '').replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+  }
 
   function addUserMsg(text, quote) {
     const empty = msgs.querySelector('.brain-empty');
@@ -775,6 +832,163 @@
     return d;
   }
 
+  function addProposalCard(proposal) {
+    const effects = Array.isArray(proposal.expected_effects) ? proposal.expected_effects : [];
+    const risk = proposal.risk_level || 'medium';
+    const d = document.createElement('div');
+    d.className = 'brain-proposal';
+    d.innerHTML = `
+      <div class="brain-proposal-head">
+        <div class="brain-proposal-title">${esc(proposal.title || 'JS 操作提案')}</div>
+        <div class="brain-proposal-risk ${esc(risk)}">${esc(risk)}</div>
+      </div>
+      <div class="brain-proposal-body">
+        <div class="brain-proposal-summary">${esc(proposal.summary || '')}</div>
+        ${effects.length ? `<ul class="brain-proposal-effects">${effects.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+        <details>
+          <summary style="cursor:pointer;color:var(--text-muted,#777)">查看代码</summary>
+          <pre class="brain-proposal-code">${esc(proposal.code || '')}</pre>
+        </details>
+      </div>
+      <div class="brain-proposal-actions">
+        <button class="brain-proposal-btn primary" data-action="approve">执行</button>
+        <button class="brain-proposal-btn" data-action="reject">拒绝</button>
+      </div>
+      <div class="brain-proposal-status"></div>
+    `;
+    d.querySelector('[data-action="approve"]').addEventListener('click', () => approveAndRunProposal(proposal, d));
+    d.querySelector('[data-action="reject"]').addEventListener('click', () => rejectProposal(proposal, d));
+    msgs.appendChild(d);
+    scroll();
+    return d;
+  }
+
+  function routeToRegex(route) {
+    const [method, path] = String(route || '').split(/\s+/, 2);
+    if (!method || !path) return null;
+    const pattern = '^' + path
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\{[^}]+\\\}/g, '[^/]+') + '$';
+    return { method: method.toUpperCase(), re: new RegExp(pattern) };
+  }
+
+  function isAllowedRequest(method, path, ctx) {
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    if (normalizedMethod === 'DELETE') return false;
+    const cleanPath = String(path || '').split('?')[0];
+    const routes = Array.isArray(ctx.allowedApiRoutes) ? ctx.allowedApiRoutes : [];
+    if (!routes.length) return cleanPath.startsWith('/api/');
+    return routes.some(route => {
+      const parsed = routeToRegex(route);
+      return parsed && parsed.method === normalizedMethod && parsed.re.test(cleanPath);
+    });
+  }
+
+  function assertProposalCode(code) {
+    const forbidden = /\b(window|document|localStorage|sessionStorage|XMLHttpRequest)\b|eval\s*\(|Function\s*\(|fetch\s*\(|\.cookie\b/i;
+    if (forbidden.test(code || '')) {
+      throw new Error('提案代码包含未允许的浏览器全局能力。请让 Agent 改用 api/ctx。');
+    }
+  }
+
+  async function runJsProposal(proposal) {
+    const ctx = Object.assign({}, window.__pageCtx || {}, proposal.page_context || {});
+    const code = proposal.code || '';
+    assertProposalCode(code);
+
+    const api = {
+      async request(method, path, body) {
+        if (!isAllowedRequest(method, path, ctx)) {
+          throw new Error(`API 不在允许范围内：${method} ${path}`);
+        }
+        const init = { method: String(method || 'GET').toUpperCase(), headers: { 'Content-Type': 'application/json' } };
+        if (body !== undefined && init.method !== 'GET') init.body = JSON.stringify(body);
+        const res = await fetch(path, init);
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+        return data;
+      },
+      toast(message) {
+        const d = addAssistantMsg();
+        d.textContent = message;
+        scroll();
+      },
+      navigate(path) {
+        if (!String(path || '').startsWith('/')) throw new Error('只能跳转站内路径。');
+        location.href = path;
+      },
+      updateDOM(selector, text) {
+        if (!String(selector || '').startsWith('#')) throw new Error('MVP 只允许按 id 更新 DOM。');
+        const el = document.querySelector(selector);
+        if (!el) throw new Error(`找不到元素：${selector}`);
+        el.textContent = String(text ?? '');
+      },
+      async reloadArticle() {
+        if (typeof loadTags === 'function') await loadTags();
+        if (typeof loadInsights === 'function') await loadInsights();
+        if (ctx.articleId) {
+          const article = await api.request('GET', `/api/articles/${ctx.articleId}`);
+          const titleEl = document.getElementById('toolbar-title');
+          if (titleEl && article.title) titleEl.textContent = article.title;
+          if (article.title) document.title = article.title;
+        }
+      },
+      getPageContext() { return ctx; },
+    };
+
+    const fn = new Function(
+      'api', 'ctx', 'window', 'document', 'localStorage', 'sessionStorage', 'XMLHttpRequest',
+      `"use strict"; return (async () => {\n${code}\n})();`
+    );
+    return await fn(api, ctx, undefined, undefined, undefined, undefined, undefined);
+  }
+
+  async function approveAndRunProposal(proposal, card) {
+    const status = card.querySelector('.brain-proposal-status');
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach(b => b.disabled = true);
+    try {
+      status.textContent = '正在请求批准…';
+      const approveRes = await fetch(`/api/agent/proposals/${proposal.id}/approve`, { method: 'POST' });
+      const approveData = await approveRes.json();
+      if (!approveRes.ok || !approveData.ok) throw new Error(approveData.error || '批准失败');
+
+      status.textContent = '正在执行提案…';
+      const result = await runJsProposal(proposal);
+      await fetch(`/api/agent/proposals/${proposal.id}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ok: true, result: result || {} }),
+      });
+      status.textContent = '已执行，并写入演化日志。';
+    } catch (err) {
+      await fetch(`/api/agent/proposals/${proposal.id}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ok: false, error: err.message }),
+      }).catch(() => {});
+      status.textContent = '执行失败：' + err.message;
+      buttons.forEach(b => b.disabled = false);
+    }
+  }
+
+  async function rejectProposal(proposal, card) {
+    const status = card.querySelector('.brain-proposal-status');
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach(b => b.disabled = true);
+    try {
+      const res = await fetch(`/api/agent/proposals/${proposal.id}/reject`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || '拒绝失败');
+      status.textContent = '已拒绝。';
+    } catch (err) {
+      status.textContent = '拒绝失败：' + err.message;
+      buttons.forEach(b => b.disabled = false);
+    }
+  }
+
   function scroll() { msgs.scrollTop = msgs.scrollHeight; }
 
   // ── 发送 ──────────────────────────────────────────────────────────────────
@@ -808,7 +1022,7 @@
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: fullMsg, history }),
+        body: JSON.stringify({ message: fullMsg, history, page_context: window.__pageCtx || {} }),
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -856,6 +1070,11 @@
               accumulated += ev.chunk;
               assistantEl.innerHTML = md(accumulated);
               scroll();
+              break;
+
+            case 'js_proposal':
+              if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
+              addProposalCard(ev.proposal || {});
               break;
 
             case 'done':

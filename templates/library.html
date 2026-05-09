@@ -1014,19 +1014,21 @@
 
         .evolution-layout {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 280px;
+            grid-template-columns: minmax(0, 1fr) 280px 300px;
             gap: 14px;
         }
 
         .evolution-list,
-        .task-list {
+        .task-list,
+        .proposal-list {
             display: flex;
             flex-direction: column;
             gap: 9px;
         }
 
         .evolution-card,
-        .task-card {
+        .task-card,
+        .proposal-card {
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius);
@@ -1061,9 +1063,13 @@
         .task-badge.running { background: rgba(138,100,64,0.16); color: var(--accent-2); }
         .task-badge.failed { background: rgba(184,84,80,0.12); color: var(--error); }
         .task-badge.done { background: rgba(74,140,92,0.14); color: var(--success); }
+        .task-badge.approved { background: rgba(74,140,92,0.14); color: var(--success); }
+        .task-badge.executed { background: rgba(74,140,92,0.14); color: var(--success); }
+        .task-badge.rejected { background: var(--surface-2); color: var(--text-muted); }
 
         .evolution-summary,
-        .task-title {
+        .task-title,
+        .proposal-title {
             font-size: 13.5px;
             line-height: 1.65;
             color: var(--text);
@@ -1081,6 +1087,18 @@
 
         .task-title {
             font-size: 12.5px;
+        }
+
+        .proposal-card {
+            padding: 11px 12px;
+            border-left: 3px solid var(--accent);
+        }
+
+        .proposal-summary {
+            margin-top: 4px;
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1.55;
         }
 
         @media (max-width: 860px) {
@@ -1398,6 +1416,12 @@
                 <div>
                     <div class="output-label" style="margin-bottom:10px">任务队列</div>
                     <div class="task-list" id="agent-task-content">
+                        <div class="loading"><div class="spinner"></div> 加载中...</div>
+                    </div>
+                </div>
+                <div>
+                    <div class="output-label" style="margin-bottom:10px">操作提案</div>
+                    <div class="proposal-list" id="agent-proposal-content">
                         <div class="loading"><div class="spinner"></div> 加载中...</div>
                     </div>
                 </div>
@@ -1941,12 +1965,15 @@
     async function loadEvolution() {
         const logEl = document.getElementById('evolution-content');
         const taskEl = document.getElementById('agent-task-content');
+        const proposalEl = document.getElementById('agent-proposal-content');
         logEl.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
         taskEl.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
+        proposalEl.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
         try {
-            const [logs, tasks] = await Promise.all([
+            const [logs, tasks, proposals] = await Promise.all([
                 fetch('/api/agent/evolution?limit=80').then(r => r.json()),
                 fetch('/api/agent/tasks?limit=30').then(r => r.json()),
+                fetch('/api/agent/proposals?limit=30').then(r => r.json()),
             ]);
             logEl.innerHTML = logs.length ? logs.map(item => `
                 <div class="evolution-card">
@@ -1969,9 +1996,22 @@
                     <div class="task-title">${escapeHtml(task.title)}</div>
                 </div>
             `).join('') : '<div style="color:var(--text-muted);font-size:12.5px;line-height:1.6">暂无任务。</div>';
+
+            proposalEl.innerHTML = proposals.length ? proposals.map(item => `
+                <div class="proposal-card">
+                    <div class="task-meta">
+                        <span class="task-badge ${item.status}">${item.status}</span>
+                        <span>${item.risk_level || 'medium'}</span>
+                        <span>${formatDateTime(item.updated_at || item.created_at)}</span>
+                    </div>
+                    <div class="proposal-title">${escapeHtml(item.title)}</div>
+                    <div class="proposal-summary">${escapeHtml(item.summary)}</div>
+                </div>
+            `).join('') : '<div style="color:var(--text-muted);font-size:12.5px;line-height:1.6">暂无提案。</div>';
         } catch (e) {
             logEl.innerHTML = `<div class="empty"><p style="color:var(--error)">加载失败：${e.message}</p></div>`;
             taskEl.innerHTML = '';
+            proposalEl.innerHTML = '';
         }
     }
 
@@ -2192,6 +2232,19 @@
     document.getElementById('feed-modal').addEventListener('click', function(e) {
         if (e.target === this) closeFeedModal();
     });
+
+    window.__pageCtx = {
+        pageType: 'library',
+        allowedApiRoutes: [
+            'GET /api/articles',
+            'GET /api/brain/stats',
+            'GET /api/agent/tasks',
+            'GET /api/agent/evolution',
+            'GET /api/agent/proposals',
+            'GET /api/inbox',
+            'GET /api/inbox/count'
+        ]
+    };
 
     // Init
     loadInboxCount();

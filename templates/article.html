@@ -1317,6 +1317,22 @@
 
 <script>
     const ARTICLE_ID = '{{ article.id }}';
+    window.__pageCtx = {
+        pageType: 'article',
+        articleId: ARTICLE_ID,
+        articleTitle: {{ article.title | tojson }},
+        allowedApiRoutes: [
+            'GET /api/articles/{articleId}',
+            'PATCH /api/articles/{articleId}',
+            'GET /api/articles/{articleId}/content',
+            'POST /api/articles/{articleId}/content',
+            'PUT /api/articles/{articleId}/tags',
+            'POST /api/articles/{articleId}/highlights',
+            'GET /api/agent/tasks',
+            'GET /api/agent/evolution',
+            'GET /api/agent/proposals'
+        ]
+    };
     let dirty = false;
     let saveTimer = null;
 

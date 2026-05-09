@@ -612,6 +612,39 @@ async def api_evolution_log(limit: int = 80):
     return JSONResponse(db.list_evolution_log(limit=limit))
 
 
+@app.get("/api/agent/proposals")
+async def api_agent_proposals(status: str = None, limit: int = 50):
+    from services import db
+    return JSONResponse(db.list_agent_proposals(status=status, limit=limit))
+
+
+@app.post("/api/agent/proposals/{proposal_id}/approve")
+async def api_approve_agent_proposal(proposal_id: str):
+    from services import agent_proposals
+    result = agent_proposals.approve(proposal_id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/api/agent/proposals/{proposal_id}/reject")
+async def api_reject_agent_proposal(proposal_id: str):
+    from services import agent_proposals
+    result = agent_proposals.reject(proposal_id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/api/agent/proposals/{proposal_id}/result")
+async def api_agent_proposal_result(proposal_id: str, request: Request):
+    from services import agent_proposals
+    body = await request.json()
+    result = agent_proposals.record_result(
+        proposal_id,
+        ok=bool(body.get("ok")),
+        result=body.get("result") or {},
+        error=body.get("error"),
+    )
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @app.get("/api/insights")
 async def api_list_insights():
     """List all insight markdown files from brain/insights/."""
@@ -688,9 +721,21 @@ async def api_chat(request: Request):
     body = await request.json()
     message = body.get("message", "").strip()
     history = body.get("history", [])
+    page_context = body.get("page_context") or {}
 
     if not message:
         return JSONResponse({"error": "message required"}, status_code=400)
+
+    action_keywords = (
+        "改", "修改", "更新", "删除", "新增", "添加", "保存", "跳转",
+        "打开", "重命名", "生成标签", "重新生成", "刷新页面", "页面上",
+    )
+    if page_context and any(k in message for k in action_keywords):
+        message = (
+            "这条用户消息可能是页面/数据操作指令。"
+            "如果需要修改当前页面或调用页面 API，请使用 propose_js 创建 JS 提案，等待用户确认后执行。\n\n"
+            f"用户原始消息：{message}"
+        )
 
     async def generate():
         loop = asyncio.get_event_loop()
@@ -698,7 +743,7 @@ async def api_chat(request: Request):
 
         def _run():
             try:
-                for event in run_stream(message, history=history):
+                for event in run_stream(message, history=history, page_context=page_context):
                     q.put(event)
             finally:
                 q.put(None)

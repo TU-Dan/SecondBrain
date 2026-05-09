@@ -102,6 +102,13 @@ def remember(article: dict) -> bool:
 
     ARTICLES_DIR.mkdir(parents=True, exist_ok=True)
     md_path = ARTICLES_DIR / f"{slug}.md"
+    if md_path.exists():
+        try:
+            existing = md_path.read_text(encoding="utf-8")[:500]
+        except Exception:
+            existing = ""
+        if f'title: "{title}"' not in existing and f"# {title}" not in existing:
+            md_path = ARTICLES_DIR / f"{slug}-{article_id[:8]}.md"
     md_path.write_text(_article_to_markdown(article), encoding="utf-8")
 
     code, out, err = _run(["import", str(ARTICLES_DIR), "--no-embed"])

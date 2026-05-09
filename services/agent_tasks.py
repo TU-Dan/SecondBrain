@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from services import db, memory
 
 log = logging.getLogger("agent_tasks")
+
+MAX_ATTEMPTS = 3
+RETRY_DELAY_MINUTES = 10
+STALE_RUNNING_MINUTES = 45
 
 
 def enqueue_article_evolution(article_id: str) -> list[str]:
@@ -67,6 +71,12 @@ def enqueue_highlight_analysis(article_id: str, highlight_text: str) -> str:
 
 def run_next() -> dict | None:
     """Run one pending task. Safe to call from a scheduler."""
+    reset_count = db.reset_stale_agent_tasks(timeout_minutes=STALE_RUNNING_MINUTES)
+    if reset_count:
+        db.add_evolution_log(
+            "task_recovered",
+            f"发现 {reset_count} 个运行超时的任务，已自动放回队列。",
+        )
     task = db.get_next_agent_task()
     if not task:
         return None
@@ -77,8 +87,19 @@ def _run_task(task: dict) -> dict:
     task_id = task["id"]
     attempts = int(task.get("attempts") or 0) + 1
     now = datetime.now(timezone.utc).isoformat()
-    db.update_agent_task(task_id, status="running", attempts=attempts, started_at=now, error=None)
-    db.add_evolution_log("task_started", f"开始执行：{task['title']}", task_id=task_id)
+    db.update_agent_task(
+        task_id,
+        status="running",
+        attempts=attempts,
+        started_at=now,
+        finished_at=None,
+        error=None,
+    )
+    db.add_evolution_log(
+        "task_started",
+        f"开始执行：{task['title']}（第 {attempts}/{MAX_ATTEMPTS} 次）",
+        task_id=task_id,
+    )
 
     try:
         handler = HANDLERS.get(task["type"])
@@ -101,18 +122,41 @@ def _run_task(task: dict) -> dict:
         return {"ok": True, "task_id": task_id, "result": result}
     except Exception as exc:
         log.exception("task failed: %s", task_id)
+        error = str(exc)
+        if attempts < MAX_ATTEMPTS:
+            scheduled_at = (datetime.now(timezone.utc) + timedelta(minutes=RETRY_DELAY_MINUTES)).isoformat()
+            db.update_agent_task(
+                task_id,
+                status="pending",
+                scheduled_at=scheduled_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                error=error,
+            )
+            db.add_evolution_log(
+                "task_retry_scheduled",
+                f"任务失败，将在 {RETRY_DELAY_MINUTES} 分钟后重试：{task['title']}。原因：{error}",
+                task_id=task_id,
+            )
+            return {
+                "ok": False,
+                "task_id": task_id,
+                "retry": True,
+                "attempts": attempts,
+                "error": error,
+            }
+
         db.update_agent_task(
             task_id,
             status="failed",
             finished_at=datetime.now(timezone.utc).isoformat(),
-            error=str(exc),
+            error=error,
         )
         db.add_evolution_log(
             "task_failed",
-            f"任务失败：{task['title']}。原因：{exc}",
+            f"任务最终失败：{task['title']}。原因：{error}",
             task_id=task_id,
         )
-        return {"ok": False, "task_id": task_id, "error": str(exc)}
+        return {"ok": False, "task_id": task_id, "retry": False, "attempts": attempts, "error": error}
 
 
 def run_task_now(task_id: str) -> dict:
@@ -122,7 +166,7 @@ def run_task_now(task_id: str) -> dict:
         return {"ok": False, "error": "task not found"}
     if task["status"] == "running":
         return {"ok": False, "error": "task already running"}
-    db.update_agent_task(task_id, status="pending")
+    db.update_agent_task(task_id, status="pending", scheduled_at=datetime.now(timezone.utc).isoformat())
     task = db.get_agent_task(task_id)
     return _run_task(task)
 
