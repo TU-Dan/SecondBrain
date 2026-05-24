@@ -36,7 +36,8 @@ PAGES_REPO = os.getenv("GITHUB_PAGES_REPO", "git@github.com:TU-Dan/podcast_gener
 PAGES_BRANCH = os.getenv("GITHUB_PAGES_BRANCH", "gh-pages")
 WORKTREE = ".pages-publish-workdir"
 EPISODES_FILE = ROOT / "static" / "episodes.json"
-GIT_TIMEOUT_SECONDS = 120
+GIT_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_GIT_TIMEOUT_SECONDS", "600"))
+HTTP_USER_AGENT = "Mozilla/5.0 SecondBrainPodcastPublisher/1.0"
 
 
 def command_env() -> dict[str, str]:
@@ -66,22 +67,60 @@ def run(cmd: list[str], check=True, cwd: Path | str | None = None, timeout: int 
     return result.stdout.strip()
 
 
-def branch_exists_remote() -> bool:
+def github_https_url(repo_url: str) -> str | None:
+    """Return a public HTTPS clone URL for GitHub SSH remotes."""
+    prefix = "git@github.com:"
+    if repo_url.startswith(prefix):
+        repo_path = repo_url[len(prefix):]
+        return f"https://github.com/{repo_path}"
+    return None
+
+
+def run_with_https_fallback(cmd: list[str], cwd: Path | str | None = None) -> str:
+    """Run a git command, retrying GitHub SSH remotes via HTTPS for read-only operations."""
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--heads", PAGES_REPO, PAGES_BRANCH],
+        return run(cmd, cwd=cwd)
+    except SystemExit as exc:
+        https_url = github_https_url(PAGES_REPO)
+        if not https_url:
+            raise
+
+        retry = [https_url if part == PAGES_REPO else part for part in cmd]
+        print(f"Retrying with HTTPS remote: {' '.join(retry)}")
+        try:
+            return run(retry, cwd=cwd)
+        except SystemExit:
+            raise exc
+
+
+def branch_exists_remote() -> bool:
+    def ls_remote(repo_url: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "ls-remote", "--heads", repo_url, PAGES_BRANCH],
             capture_output=True,
             text=True,
             env=command_env(),
             timeout=30,
         )
+
+    try:
+        result = ls_remote(PAGES_REPO)
     except subprocess.TimeoutExpired:
-        print(f"Command timed out after 30s: git ls-remote --heads {PAGES_REPO} {PAGES_BRANCH}")
-        sys.exit(1)
+        https_url = github_https_url(PAGES_REPO)
+        if not https_url:
+            print(f"Command timed out after 30s: git ls-remote --heads {PAGES_REPO} {PAGES_BRANCH}")
+            sys.exit(1)
+        print(f"SSH ls-remote timed out; retrying with HTTPS remote: {https_url}")
+        result = ls_remote(https_url)
     if result.returncode != 0:
-        print(f"Command failed: git ls-remote --heads {PAGES_REPO} {PAGES_BRANCH}")
-        print(result.stderr)
-        sys.exit(result.returncode)
+        https_url = github_https_url(PAGES_REPO)
+        if https_url and PAGES_REPO != https_url:
+            print(f"SSH ls-remote failed; retrying with HTTPS remote: {https_url}")
+            result = ls_remote(https_url)
+        if result.returncode != 0:
+            print(f"Command failed: git ls-remote --heads {PAGES_REPO} {PAGES_BRANCH}")
+            print(result.stderr)
+            sys.exit(result.returncode)
     out = result.stdout
     return f"refs/heads/{PAGES_BRANCH}" in out
 
@@ -99,7 +138,11 @@ def remote_episode_count() -> int | None:
     if not PAGES_URL:
         return None
     try:
-        with urllib.request.urlopen(f"{PAGES_URL}/podcast.xml", timeout=15) as response:
+        request = urllib.request.Request(
+            f"{PAGES_URL}/podcast.xml",
+            headers={"User-Agent": HTTP_USER_AGENT, "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
             xml = response.read()
         root = ET.fromstring(xml)
     except Exception as exc:
@@ -168,15 +211,18 @@ def publish() -> str:
     if Path(WORKTREE).exists():
         shutil.rmtree(WORKTREE)
 
-    run([
+    run_with_https_fallback([
         "git",
         "clone",
+        "--depth",
+        "1",
         "--branch",
         PAGES_BRANCH,
         "--single-branch",
         PAGES_REPO,
         WORKTREE,
     ])
+    run(["git", "remote", "set-url", "origin", PAGES_REPO], cwd=WORKTREE)
 
     try:
         audio_src = ROOT / "static" / "audio"
