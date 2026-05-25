@@ -1,11 +1,24 @@
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import uuid
+import urllib.request
 import yt_dlp
 import trafilatura
 from PyPDF2 import PdfReader
+
+
+FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
 
 
 def _fetch_html(url: str) -> str | None:
@@ -13,13 +26,49 @@ def _fetch_html(url: str) -> str | None:
     html = trafilatura.fetch_url(url)
     if html:
         return html
+
     try:
         from curl_cffi import requests as cffi_requests
-        resp = cffi_requests.get(url, impersonate="chrome", timeout=15)
+        resp = cffi_requests.get(url, impersonate="chrome", headers=FETCH_HEADERS, timeout=20)
         if resp.status_code == 200 and resp.text:
             return resp.text
     except Exception as e:
         print(f"curl_cffi fallback failed: {e}")
+
+    try:
+        req = urllib.request.Request(url, headers=FETCH_HEADERS)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = resp.read()
+        return body.decode("utf-8", errors="replace") if body else None
+    except Exception as e:
+        print(f"urllib fallback failed: {e}")
+
+    try:
+        result = subprocess.run(
+            [
+                "curl",
+                "-L",
+                "--compressed",
+                "--max-time",
+                "25",
+                "-A",
+                FETCH_HEADERS["User-Agent"],
+                "-H",
+                f"Accept: {FETCH_HEADERS['Accept']}",
+                "-H",
+                f"Accept-Language: {FETCH_HEADERS['Accept-Language']}",
+                url,
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout:
+            return result.stdout.decode("utf-8", errors="replace")
+        if result.stderr:
+            print(f"curl fallback failed: {result.stderr.decode('utf-8', errors='replace')[:300]}")
+    except Exception as e:
+        print(f"curl fallback failed: {e}")
+
     return None
 
 
@@ -36,14 +85,41 @@ def _extract_og_image(html: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _extract_title(html: str) -> str | None:
+    og = re.search(
+        r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if og:
+        return re.sub(r"\s+", " ", og.group(1)).strip()
+
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return None
+    title = re.sub(r"<[^>]+>", "", m.group(1))
+    return re.sub(r"\s+", " ", title).strip() or None
+
+
 def extract_from_url(url: str) -> tuple[str, str | None]:
     """Extract text and og:image thumbnail from a web page."""
     html = _fetch_html(url)
     if not html:
         return "", None
 
-    text = trafilatura.extract(html) or ""
+    text = trafilatura.extract(html, include_comments=False, include_tables=False) or ""
+    if len(text.strip()) < 200:
+        text = trafilatura.extract(
+            html,
+            favor_precision=False,
+            favor_recall=True,
+            include_comments=False,
+            include_tables=False,
+        ) or text
     thumbnail = _extract_og_image(html)
+    title = _extract_title(html)
+    if title and text and not text.lstrip().startswith(title):
+        text = f"{title}\n\n{text}"
     return text, thumbnail
 
 

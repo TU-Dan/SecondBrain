@@ -5,7 +5,7 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 DB_PATH = "data/knowledge.db"
 SCRIPTS_DIR = "static/scripts"
@@ -124,6 +124,30 @@ def init_db():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_evolution_log_created
             ON evolution_log(created_at)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_proposals (
+                id TEXT PRIMARY KEY,
+                task_id TEXT,
+                kind TEXT DEFAULT 'js',
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                code TEXT NOT NULL,
+                page_context_json TEXT DEFAULT '{}',
+                risk_level TEXT DEFAULT 'medium',
+                expected_effects_json TEXT DEFAULT '[]',
+                status TEXT DEFAULT 'pending',
+                result_json TEXT,
+                error TEXT,
+                created_at TEXT,
+                approved_at TEXT,
+                executed_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_agent_proposals_status_created
+            ON agent_proposals(status, created_at)
         """)
         conn.commit()
     _scan_scripts_dir()
@@ -338,6 +362,18 @@ def delete_article(article_id: str) -> bool:
 def update_article_title(article_id: str, title: str):
     with get_conn() as conn:
         conn.execute("UPDATE articles SET title=? WHERE id=?", (title, article_id))
+        conn.commit()
+
+
+def update_article_summary(article_id: str, summary: str, word_count: int = None):
+    with get_conn() as conn:
+        if word_count is None:
+            conn.execute("UPDATE articles SET summary=? WHERE id=?", (summary, article_id))
+        else:
+            conn.execute(
+                "UPDATE articles SET summary=?, word_count=? WHERE id=?",
+                (summary, word_count, article_id),
+            )
         conn.commit()
 
 
@@ -570,6 +606,24 @@ def get_next_agent_task():
     return dict(row) if row else None
 
 
+def reset_stale_agent_tasks(timeout_minutes: int = 45) -> int:
+    """Return stuck running tasks to pending so the queue can recover."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)).isoformat()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """UPDATE agent_tasks
+               SET status='pending',
+                   error='任务运行超时，已自动放回队列。',
+                   updated_at=?
+               WHERE status='running'
+                 AND started_at IS NOT NULL
+                 AND started_at <= ?""",
+            (datetime.now(timezone.utc).isoformat(), cutoff),
+        )
+        conn.commit()
+    return cur.rowcount
+
+
 def get_agent_task(task_id: str):
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM agent_tasks WHERE id=?", (task_id,)).fetchone()
@@ -579,7 +633,7 @@ def get_agent_task(task_id: str):
 def update_agent_task(task_id: str, **fields):
     allowed = {
         "status", "attempts", "started_at", "finished_at",
-        "result_json", "error", "updated_at",
+        "result_json", "error", "scheduled_at", "updated_at",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
@@ -636,3 +690,98 @@ def list_evolution_log(limit: int = 80) -> list[dict]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Agent proposals ─────────────────────────────────────────────────────────
+
+def create_agent_proposal(
+    *,
+    title: str,
+    summary: str,
+    code: str,
+    kind: str = "js",
+    page_context: dict = None,
+    risk_level: str = "medium",
+    expected_effects: list[str] = None,
+    task_id: str = None,
+) -> dict:
+    proposal_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO agent_proposals
+               (id, task_id, kind, title, summary, code, page_context_json,
+                risk_level, expected_effects_json, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                proposal_id,
+                task_id,
+                kind,
+                title,
+                summary,
+                code,
+                json.dumps(page_context or {}, ensure_ascii=False),
+                risk_level,
+                json.dumps(expected_effects or [], ensure_ascii=False),
+                "pending",
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    return get_agent_proposal(proposal_id)
+
+
+def _decode_proposal(row: sqlite3.Row | None) -> dict | None:
+    if not row:
+        return None
+    item = dict(row)
+    for key, fallback in (("page_context_json", {}), ("expected_effects_json", []), ("result_json", None)):
+        value = item.get(key)
+        out_key = key.removesuffix("_json")
+        if value is None:
+            item[out_key] = fallback
+            continue
+        try:
+            item[out_key] = json.loads(value)
+        except Exception:
+            item[out_key] = fallback
+    return item
+
+
+def get_agent_proposal(proposal_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM agent_proposals WHERE id=?", (proposal_id,)).fetchone()
+    return _decode_proposal(row)
+
+
+def list_agent_proposals(status: str = None, limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM agent_proposals WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM agent_proposals ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [_decode_proposal(r) for r in rows]
+
+
+def update_agent_proposal(proposal_id: str, **fields) -> dict | None:
+    allowed = {
+        "status", "result_json", "error", "approved_at",
+        "executed_at", "updated_at",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return get_agent_proposal(proposal_id)
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    columns = ", ".join(f"{k}=?" for k in updates)
+    values = list(updates.values()) + [proposal_id]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE agent_proposals SET {columns} WHERE id=?", values)
+        conn.commit()
+    return get_agent_proposal(proposal_id)
