@@ -482,10 +482,13 @@ def _execute_tool(name: str, args: dict, page_context: dict | None = None) -> st
         max_chars = args.get("max_chars", 3000)
         try:
             from services.extractor import extract_content
-            content, title, _ = extract_content(url)
+            content, thumbnail = extract_content(url)
             if not content:
                 return f"无法提取页面内容：{url}"
+            title = _guess_title_from_content(content)
             header = f"**{title}**\n来源：{url}\n\n" if title else f"来源：{url}\n\n"
+            if thumbnail:
+                header += f"缩略图：{thumbnail}\n\n"
             return header + content[:max_chars]
         except Exception as e:
             return f"抓取失败：{e}"
@@ -514,6 +517,14 @@ def _execute_tool(name: str, args: dict, page_context: dict | None = None) -> st
         )
 
     return f"未知工具：{name}"
+
+
+def _guess_title_from_content(content: str) -> str | None:
+    for line in (content or "").splitlines():
+        title = line.strip().lstrip("#").strip()
+        if title:
+            return title[:120]
+    return None
 
 
 # ── Agent Loop ────────────────────────────────────────────────────────────────

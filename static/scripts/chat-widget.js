@@ -178,21 +178,53 @@
     @keyframes brain-fade-in { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
 
     /* Tool call block */
-    .brain-tool {
+    .brain-tool-run {
       border:1px solid var(--border,rgba(0,0,0,.1));
       border-radius:10px; overflow:hidden;
       font-size:12px; animation: brain-fade-in .2s ease;
+      background:var(--surface,rgba(255,255,255,.04));
+    }
+    .brain-tool-run-header {
+      display:flex; align-items:center; gap:7px;
+      padding:8px 11px; cursor:pointer;
+      background:var(--surface-2,rgba(0,0,0,.04));
+      user-select:none; transition:background .15s;
+    }
+    .brain-tool-run-header:hover { background:var(--surface-2,rgba(0,0,0,.07)); }
+    .brain-tool-run-title { font-weight:700; color:var(--text,#1a1a14); }
+    .brain-tool-run-summary {
+      flex:1; min-width:0; color:var(--text-muted,#999);
+      overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+      font-size:11px;
+    }
+    .brain-tool-run-count {
+      color:var(--text-muted,#888); font-size:11px;
+      padding:1px 6px; border-radius:999px;
+      background:var(--surface,rgba(255,255,255,.35));
+    }
+    .brain-tool-run-chevron { color:var(--text-muted,#bbb); font-size:10px; transition:transform .2s; }
+    .brain-tool-run.open .brain-tool-run-chevron { transform:rotate(180deg); }
+    .brain-tool-run-body { display:none; border-top:1px solid var(--border,rgba(0,0,0,.08)); }
+    .brain-tool-run.open .brain-tool-run-body { display:block; }
+    .brain-tool {
+      border-top:1px solid var(--border,rgba(0,0,0,.08));
+      overflow:hidden;
+      font-size:12px;
+    }
+    .brain-tool:first-child {
+      border-top:0;
     }
     .brain-tool-header {
       display:flex; align-items:center; gap:6px;
       padding:7px 11px; cursor:pointer;
-      background:var(--surface-2,rgba(0,0,0,.04));
+      background:transparent;
       user-select:none;
       transition:background .15s;
     }
     .brain-tool-header:hover { background:var(--surface-2,rgba(0,0,0,.07)); }
     .brain-tool-icon { font-size:13px; }
-    .brain-tool-name { font-weight:600; color:var(--text,#1a1a14); flex:1; }
+    .brain-tool-name { font-weight:600; color:var(--text,#1a1a14); }
+    .brain-tool-status { color:var(--text-muted,#999); font-size:11px; margin-left:auto; }
     .brain-tool-args { color:var(--text-muted,#999); font-size:11px; max-width:160px; overflow:hidden; white-space:nowrap; }
     .brain-tool-chevron { color:var(--text-muted,#bbb); font-size:10px; transition:transform .2s; }
     .brain-tool.open .brain-tool-chevron { transform:rotate(180deg); }
@@ -802,27 +834,68 @@
     if (t) t.textContent = text;
   }
 
-  function addToolBlock(name, args) {
+  function formatToolArgs(args) {
+    return Object.entries(args || {})
+      .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+      .join(' ')
+      .slice(0, 80);
+  }
+
+  function updateToolRunSummary(runEl) {
+    const steps = Array.from(runEl.querySelectorAll('.brain-tool'));
+    const names = steps.map(step => step.dataset.toolName).filter(Boolean);
+    const unique = [...new Set(names)];
+    const count = runEl.querySelector('.brain-tool-run-count');
+    const summary = runEl.querySelector('.brain-tool-run-summary');
+    if (count) count.textContent = `${steps.length} 步`;
+    if (summary) summary.textContent = unique.join(' / ') || '准备调用工具';
+  }
+
+  function addToolRun() {
+    const d = document.createElement('div');
+    d.className = 'brain-tool-run';
+    d.innerHTML = `
+      <div class="brain-tool-run-header">
+        <span class="brain-tool-icon">⚙️</span>
+        <span class="brain-tool-run-title">执行过程</span>
+        <span class="brain-tool-run-summary">准备调用工具</span>
+        <span class="brain-tool-run-count">0 步</span>
+        <span class="brain-tool-run-chevron">▾</span>
+      </div>
+      <div class="brain-tool-run-body"></div>`;
+    d.querySelector('.brain-tool-run-header').addEventListener('click', () => d.classList.toggle('open'));
+    msgs.appendChild(d);
+    scroll();
+    return d;
+  }
+
+  function addToolBlock(name, args, runEl) {
     const icon = TOOL_ICONS[name] || '⚙️';
-    const argStr = Object.values(args).join(' ').slice(0, 40);
+    const argStr = formatToolArgs(args);
+    const parent = runEl ? runEl.querySelector('.brain-tool-run-body') : msgs;
     const d = document.createElement('div');
     d.className = 'brain-tool';
+    d.dataset.toolName = name;
     d.innerHTML = `
       <div class="brain-tool-header">
         <span class="brain-tool-icon">${icon}</span>
-        <span class="brain-tool-name">${name}</span>
-        <span class="brain-tool-args">${argStr}</span>
+        <span class="brain-tool-name">${esc(name)}</span>
+        <span class="brain-tool-args">${esc(argStr)}</span>
+        <span class="brain-tool-status">运行中</span>
         <span class="brain-tool-chevron">▾</span>
       </div>
       <div class="brain-tool-body"></div>`;
     d.querySelector('.brain-tool-header').addEventListener('click', () => d.classList.toggle('open'));
-    msgs.appendChild(d);
+    parent.appendChild(d);
+    if (runEl) updateToolRunSummary(runEl);
     scroll();
     return d;
   }
 
   function fillToolResult(toolEl, result) {
     toolEl.querySelector('.brain-tool-body').textContent = result;
+    const status = toolEl.querySelector('.brain-tool-status');
+    if (status) status.textContent = '完成';
   }
 
   function addAssistantMsg() {
@@ -1014,6 +1087,7 @@
     sendBtn.disabled = true;
 
     let thinkingEl = addThinking('正在思考…');
+    let currentToolRun = null;
     let currentToolEl = null;
     let assistantEl = null;
     let accumulated = '';
@@ -1053,7 +1127,8 @@
 
             case 'tool_start':
               if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-              currentToolEl = addToolBlock(ev.name, ev.args || {});
+              if (!currentToolRun) currentToolRun = addToolRun();
+              currentToolEl = addToolBlock(ev.name, ev.args || {}, currentToolRun);
               break;
 
             case 'tool_end':
