@@ -274,11 +274,6 @@ async def generate_page(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
 
-@app.get("/capture", response_class=HTMLResponse)
-async def capture_page(request: Request):
-    return templates.TemplateResponse(request=request, name="capture.html")
-
-
 @app.get("/api/brief")
 async def api_brief():
     import random

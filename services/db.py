@@ -68,6 +68,26 @@ def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS inbox_items (
+                id TEXT PRIMARY KEY,
+                source TEXT DEFAULT 'manual',
+                intent TEXT DEFAULT 'read',
+                title TEXT NOT NULL,
+                url TEXT,
+                description TEXT,
+                note TEXT,
+                status TEXT DEFAULT 'pending',
+                priority TEXT DEFAULT 'normal',
+                created_at TEXT,
+                updated_at TEXT,
+                completed_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_inbox_items_status_intent_created
+            ON inbox_items(status, intent, created_at)
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS highlights (
                 id TEXT PRIMARY KEY,
                 article_id TEXT NOT NULL,
@@ -461,6 +481,149 @@ def update_feed_item_status(item_id: str, status: str):
     with get_conn() as conn:
         conn.execute("UPDATE feed_items SET status=? WHERE id=?", (status, item_id))
         conn.commit()
+
+
+# ── Unified inbox / waiting list ─────────────────────────────────────────────
+
+VALID_INBOX_INTENTS = {"podcast", "read", "todo", "note"}
+VALID_INBOX_STATUSES = {"pending", "processing", "done", "archived", "dismissed", "saved"}
+VALID_INBOX_PRIORITIES = {"low", "normal", "high"}
+
+
+def _normalize_choice(value: str | None, allowed: set[str], default: str) -> str:
+    value = (value or "").strip()
+    return value if value in allowed else default
+
+
+def add_inbox_item(
+    title: str,
+    url: str = None,
+    intent: str = "read",
+    description: str = None,
+    note: str = None,
+    priority: str = "normal",
+    source: str = "manual",
+) -> str:
+    item_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    intent = _normalize_choice(intent, VALID_INBOX_INTENTS, "read")
+    priority = _normalize_choice(priority, VALID_INBOX_PRIORITIES, "normal")
+    title = (title or "").strip() or (url or "未命名")
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO inbox_items
+               (id, source, intent, title, url, description, note, status, priority, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (item_id, source, intent, title, url, description, note, "pending", priority, now, now),
+        )
+        conn.commit()
+    return item_id
+
+
+def get_inbox_item(item_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM inbox_items WHERE id=?", (item_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_inbox_item(item_id: str, **fields) -> bool:
+    allowed = {"intent", "title", "url", "description", "note", "status", "priority"}
+    updates = []
+    params = []
+    for key, value in fields.items():
+        if key not in allowed:
+            continue
+        if key == "intent":
+            value = _normalize_choice(value, VALID_INBOX_INTENTS, "read")
+        elif key == "status":
+            value = _normalize_choice(value, VALID_INBOX_STATUSES, "pending")
+        elif key == "priority":
+            value = _normalize_choice(value, VALID_INBOX_PRIORITIES, "normal")
+        updates.append(f"{key}=?")
+        params.append(value)
+    if not updates:
+        return False
+    updates.append("updated_at=?")
+    params.append(datetime.now(timezone.utc).isoformat())
+    if fields.get("status") == "done":
+        updates.append("completed_at=?")
+        params.append(datetime.now(timezone.utc).isoformat())
+    params.append(item_id)
+    with get_conn() as conn:
+        cur = conn.execute(f"UPDATE inbox_items SET {', '.join(updates)} WHERE id=?", params)
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_inbox_item(item_id: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM inbox_items WHERE id=?", (item_id,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def list_manual_inbox_items(intent: str = None, status: str = "pending", limit: int = 100) -> list[dict]:
+    conditions = []
+    params = []
+    if status:
+        conditions.append("status=?")
+        params.append(status)
+    if intent and intent != "all":
+        conditions.append("intent=?")
+        params.append(intent)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM inbox_items {where} ORDER BY created_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_unified_inbox(intent: str = None, status: str = "pending", min_score: int = 0, limit: int = 150) -> list[dict]:
+    manual = []
+    if intent in (None, "", "all", "podcast", "read", "todo", "note"):
+        manual_intent = None if intent in (None, "", "all") else intent
+        manual = list_manual_inbox_items(intent=manual_intent, status=status, limit=limit)
+
+    unified = []
+    for item in manual:
+        unified.append({
+            **item,
+            "kind": "manual",
+            "feed_name": "",
+            "relevance_score": None,
+            "published_at": "",
+        })
+
+    if intent in (None, "", "all", "rss", "read") and status == "pending":
+        for item in list_inbox(min_score=min_score):
+            unified.append({
+                **item,
+                "kind": "rss",
+                "intent": "read",
+                "source": "rss",
+                "note": "",
+                "priority": "normal",
+            })
+
+    priority_rank = {"high": 0, "normal": 1, "low": 2}
+    unified.sort(key=lambda item: (
+        priority_rank.get(item.get("priority"), 1),
+        -(item.get("relevance_score") or 0),
+        item.get("created_at") or "",
+    ))
+    unified.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    unified.sort(key=lambda item: priority_rank.get(item.get("priority"), 1))
+    return unified[:limit]
+
+
+def count_unified_inbox() -> int:
+    with get_conn() as conn:
+        manual_count = conn.execute(
+            "SELECT COUNT(*) FROM inbox_items WHERE status='pending'"
+        ).fetchone()[0]
+    return manual_count + count_inbox()
 
 
 # ── Article counts ────────────────────────────────────────────────────────────

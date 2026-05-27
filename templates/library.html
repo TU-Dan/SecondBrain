@@ -1012,6 +1012,72 @@
         }
         .inbox-empty svg { opacity: 0.18; width: 44px; height: 44px; }
 
+        .capture-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+
+        .capture-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 120px 92px;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .capture-row input,
+        .capture-row select {
+            width: 100%;
+            padding: 9px 11px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            color: var(--text);
+            font-size: 13px;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .capture-row input:focus,
+        .capture-row select:focus { border-color: var(--accent); }
+
+        .capture-status {
+            min-height: 18px;
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .capture-status.error { color: var(--error); }
+        .capture-status.success { color: var(--success); }
+
+        .inbox-filters {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .inbox-filter {
+            padding: 5px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-muted);
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .inbox-filter.active {
+            color: var(--accent);
+            border-color: rgba(74,103,65,0.35);
+            background: var(--accent-glow);
+        }
+
         .evolution-layout {
             display: grid;
             grid-template-columns: minmax(0, 1fr) 280px 300px;
@@ -1133,6 +1199,25 @@
         .score-mid   { background: rgba(138,100,64,0.16); color: var(--accent-2); }
         .score-low   { background: var(--surface-2); color: var(--text-muted); }
 
+        .intent-badge {
+            width: 44px;
+            min-height: 40px;
+            border-radius: 12px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            text-align: center;
+            line-height: 1.2;
+            background: var(--accent-glow);
+            color: var(--accent);
+        }
+        .intent-badge.todo { background: rgba(138,100,64,0.16); color: var(--accent-2); }
+        .intent-badge.note { background: var(--surface-2); color: var(--text-muted); }
+        .intent-badge.rss { background: rgba(74,140,92,0.16); color: var(--success); }
+
         .inbox-item-body { flex: 1; min-width: 0; }
 
         .inbox-item-title {
@@ -1172,6 +1257,13 @@
             border-radius: 20px;
             background: var(--accent-glow);
             color: var(--accent);
+        }
+
+        .inbox-note {
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--accent);
+            margin: -2px 0 8px;
         }
 
         .inbox-item-actions {
@@ -1369,6 +1461,26 @@
                     <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                     刷新
                 </button>
+            </div>
+            <div class="capture-panel">
+                <div class="capture-row">
+                    <input id="capture-input" type="text" placeholder="粘贴链接、输入 todo 或临时想法..." onkeydown="if(event.key==='Enter')captureInboxItem()">
+                    <select id="capture-intent">
+                        <option value="read">待读</option>
+                        <option value="podcast">待播客</option>
+                        <option value="todo">Todo</option>
+                        <option value="note">备注</option>
+                    </select>
+                    <button class="btn-inbox-save" onclick="captureInboxItem()">保存</button>
+                </div>
+                <div id="capture-status" class="capture-status"></div>
+            </div>
+            <div class="inbox-filters">
+                <button class="inbox-filter active" data-intent="all" onclick="setInboxFilter('all', this)">全部</button>
+                <button class="inbox-filter" data-intent="podcast" onclick="setInboxFilter('podcast', this)">待播客</button>
+                <button class="inbox-filter" data-intent="read" onclick="setInboxFilter('read', this)">待读</button>
+                <button class="inbox-filter" data-intent="todo" onclick="setInboxFilter('todo', this)">Todo</button>
+                <button class="inbox-filter" data-intent="rss" onclick="setInboxFilter('rss', this)">RSS</button>
             </div>
             <div id="inbox-content">
                 <div class="loading"><div class="spinner"></div> 加载中...</div>
@@ -2076,32 +2188,119 @@
         return 'score-low';
     }
 
+    let inboxFilter = 'all';
+
+    const INTENT_LABELS = {
+        podcast: '播客',
+        read: '待读',
+        todo: 'Todo',
+        note: '备注',
+        rss: 'RSS'
+    };
+
+    function isUrlLike(value) {
+        return /^https?:\/\//i.test(value.trim());
+    }
+
+    async function captureInboxItem() {
+        const input = document.getElementById('capture-input');
+        const intentEl = document.getElementById('capture-intent');
+        const statusEl = document.getElementById('capture-status');
+        const value = input.value.trim();
+        if (!value) return;
+        statusEl.className = 'capture-status';
+        statusEl.textContent = '保存中...';
+        const isUrl = isUrlLike(value);
+        const intent = intentEl.value;
+        const body = {
+            intent,
+            title: isUrl ? '' : value.slice(0, 80),
+            url: isUrl ? value : '',
+            note: isUrl ? '' : value,
+            source: 'manual'
+        };
+        try {
+            const res = await fetch('/api/inbox/items', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.error || `保存失败：HTTP ${res.status}`);
+            }
+            input.value = '';
+            statusEl.className = 'capture-status success';
+            statusEl.textContent = '已保存';
+            setInboxFilter(intent, document.querySelector(`.inbox-filter[data-intent="${intent}"]`));
+            await loadInboxCount();
+        } catch (err) {
+            statusEl.className = 'capture-status error';
+            statusEl.textContent = err.message || '保存失败：请确认页面是从 Second Brain 服务地址打开的';
+        }
+    }
+
+    function setInboxFilter(intent, btn) {
+        inboxFilter = intent;
+        document.querySelectorAll('.inbox-filter').forEach(b => b.classList.remove('active'));
+        btn?.classList.add('active');
+        loadInbox();
+    }
+
+    function inboxBadge(item) {
+        if (item.kind === 'rss') {
+            return `<div class="intent-badge rss">RSS</div>`;
+        }
+        const label = INTENT_LABELS[item.intent] || item.intent || '收件';
+        return `<div class="intent-badge ${escapeHtml(item.intent || '')}">${escapeHtml(label)}</div>`;
+    }
+
+    function inboxActions(item) {
+        if (item.kind === 'rss') {
+            return `
+                <button class="btn-inbox-save" onclick="saveInboxItem('${item.id}', this)">存入</button>
+                <button class="btn-inbox-dismiss" onclick="dismissInboxItem('${item.id}')">✕</button>
+            `;
+        }
+        const podcastBtn = item.intent === 'podcast' && item.url
+            ? `<button class="btn-inbox-save" onclick="podcastInboxItem('${item.id}', this)">生成播客</button>`
+            : '';
+        return `
+            ${podcastBtn}
+            <button class="btn-inbox-dismiss" onclick="patchManualInboxItem('${item.id}', 'done')">完成</button>
+            <button class="btn-inbox-dismiss" onclick="patchManualInboxItem('${item.id}', 'archived')">归档</button>
+            <button class="btn-inbox-dismiss" onclick="deleteManualInboxItem('${item.id}')">✕</button>
+        `;
+    }
+
     function renderInbox(items) {
         const el = document.getElementById('inbox-content');
         if (!items.length) {
             el.innerHTML = `<div class="inbox-empty">
                 <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-                <span>没有新内容，去添加订阅吧</span>
+                <span>没有待处理内容</span>
                 <button class="btn-brief" onclick="openFeedModal()" style="margin-top:4px">管理订阅</button>
             </div>`;
             return;
         }
         el.innerHTML = items.map(item => `
-            <div class="inbox-item" id="iitem-${item.id}">
-                <div class="score-ring ${scoreClass(item.relevance_score)}">${item.relevance_score}</div>
+            <div class="inbox-item" id="iitem-${escapeHtml(item.id)}">
+                ${item.kind === 'rss' ? `<div class="score-ring ${scoreClass(item.relevance_score)}">${item.relevance_score}</div>` : inboxBadge(item)}
                 <div class="inbox-item-body">
                     <div class="inbox-item-title">
-                        <a href="${item.url}" target="_blank" style="color:inherit;text-decoration:none">${item.title || '无标题'}</a>
+                        ${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" style="color:inherit;text-decoration:none">${escapeHtml(item.title || item.url)}</a>` : escapeHtml(item.title || '无标题')}
                     </div>
-                    ${item.description ? `<div class="inbox-item-desc">${item.description}</div>` : ''}
+                    ${item.description ? `<div class="inbox-item-desc">${escapeHtml(item.description)}</div>` : ''}
+                    ${item.note ? `<div class="inbox-note">${escapeHtml(item.note)}</div>` : ''}
                     <div class="inbox-item-meta">
-                        ${item.feed_name ? `<span class="inbox-source-badge">${item.feed_name}</span>` : ''}
-                        ${item.published_at ? `<span style="font-size:11px;color:var(--text-muted)">${item.published_at.slice(0,10)}</span>` : ''}
+                        <span class="inbox-source-badge">${escapeHtml(item.kind === 'rss' ? (item.feed_name || 'RSS') : (INTENT_LABELS[item.intent] || '手动'))}</span>
+                        ${item.priority === 'high' ? `<span class="inbox-source-badge">高优先级</span>` : ''}
+                        ${item.published_at ? `<span style="font-size:11px;color:var(--text-muted)">${escapeHtml(item.published_at.slice(0,10))}</span>` : ''}
+                        ${item.created_at ? `<span style="font-size:11px;color:var(--text-muted)">${escapeHtml(item.created_at.slice(0,10))}</span>` : ''}
                     </div>
                 </div>
                 <div class="inbox-item-actions">
-                    <button class="btn-inbox-save" onclick="saveInboxItem('${item.id}', this)">存入</button>
-                    <button class="btn-inbox-dismiss" onclick="dismissInboxItem('${item.id}')">✕</button>
+                    ${inboxActions(item)}
                 </div>
             </div>`).join('');
     }
@@ -2110,7 +2309,8 @@
         const el = document.getElementById('inbox-content');
         el.innerHTML = `<div class="loading"><div class="spinner"></div> 加载中...</div>`;
         try {
-            const res = await fetch('/api/inbox');
+            const params = inboxFilter === 'all' ? '' : `?intent=${encodeURIComponent(inboxFilter)}`;
+            const res = await fetch('/api/inbox' + params);
             const { items } = await res.json();
             renderInbox(items);
         } catch(e) {
@@ -2140,6 +2340,34 @@
         const el = document.getElementById(`iitem-${id}`);
         if (el) { el.style.opacity = '0'; el.style.transition = 'opacity 0.2s'; setTimeout(() => el.remove(), 200); }
         loadInboxCount();
+    }
+
+    async function patchManualInboxItem(id, status) {
+        await fetch(`/api/inbox/items/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+        });
+        document.getElementById(`iitem-${id}`)?.remove();
+        loadInboxCount();
+    }
+
+    async function deleteManualInboxItem(id) {
+        await fetch(`/api/inbox/items/${id}`, { method: 'DELETE' });
+        document.getElementById(`iitem-${id}`)?.remove();
+        loadInboxCount();
+    }
+
+    async function podcastInboxItem(id, btn) {
+        btn.disabled = true;
+        btn.textContent = '已提交';
+        try {
+            await fetch(`/api/inbox/items/${id}/podcast`, { method: 'POST' });
+            await loadInboxCount();
+        } catch(e) {
+            btn.disabled = false;
+            btn.textContent = '生成播客';
+        }
     }
 
     async function refreshFeeds() {

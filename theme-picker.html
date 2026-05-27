@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>主题选择 · 第二大脑</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background: #f3f2ee;
+      color: #1a1a14;
+      min-height: 100vh;
+      padding: 52px 24px 80px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .page { max-width: 980px; margin: 0 auto; }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 52px;
+    }
+
+    .brand { display: flex; align-items: center; gap: 14px; }
+
+    .brand-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, #4a6741, #8a6440);
+      border-radius: 11px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 14px rgba(74,103,65,0.32);
+      flex-shrink: 0;
+    }
+    .brand-icon svg { width: 20px; height: 20px; fill: white; }
+
+    .brand-label {
+      font-size: 10.5px; font-weight: 700; letter-spacing: 1.5px;
+      text-transform: uppercase; color: #9a9a8a; margin-bottom: 2px;
+    }
+    .brand-title { font-size: 21px; font-weight: 700; letter-spacing: -0.4px; color: #1a1a14; }
+
+    /* Mode toggle */
+    .mode-toggle {
+      display: flex; align-items: center; gap: 9px;
+      font-size: 13px;
+      background: white;
+      padding: 7px 13px;
+      border-radius: 24px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.05);
+    }
+
+    .mode-lbl { color: #aaa; transition: color 0.2s; font-size: 13px; }
+    .mode-lbl.on { color: #1a1a14; font-weight: 500; }
+
+    .pill {
+      width: 40px; height: 22px;
+      background: #d0d0c5;
+      border-radius: 11px; border: none; cursor: pointer;
+      position: relative; transition: background 0.25s; flex-shrink: 0;
+    }
+    .pill.dark { background: #3a3d4a; }
+    .pill::after {
+      content: '';
+      position: absolute;
+      width: 16px; height: 16px; background: white;
+      border-radius: 50%; top: 3px; left: 3px;
+      transition: transform 0.25s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+    }
+    .pill.dark::after { transform: translateX(18px); }
+
+    /* ── Grid ── */
+    .grid {
+      display: flex; flex-wrap: wrap;
+      gap: 18px; justify-content: center;
+      margin-bottom: 52px;
+    }
+
+    /* ── Theme card ── */
+    .card {
+      width: 278px;
+      background: #ffffff;
+      border-radius: 18px;
+      cursor: pointer;
+      transition: transform 0.22s, box-shadow 0.22s;
+      position: relative;
+      border: 2.5px solid transparent;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.04);
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .card:hover { transform: translateY(-4px); box-shadow: 0 10px 32px rgba(0,0,0,0.12); }
+
+    .card.selected {
+      border-color: var(--c-accent);
+      box-shadow: 0 8px 32px var(--c-glow), 0 0 0 1px transparent;
+      transform: translateY(-3px);
+    }
+
+    /* Checkmark */
+    .check {
+      position: absolute; top: 10px; right: 10px; z-index: 20;
+      width: 22px; height: 22px;
+      background: var(--c-accent);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; transform: scale(0.4);
+      transition: opacity 0.22s, transform 0.22s;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+    .card.selected .check { opacity: 1; transform: scale(1); }
+    .check svg { width: 11px; height: 11px; stroke: white; fill: none; stroke-width: 2.5; }
+
+    /* Current badge */
+    .cur-badge {
+      position: absolute; top: 10px; left: 10px; z-index: 20;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+      padding: 3px 8px;
+      background: rgba(0,0,0,0.48);
+      color: rgba(255,255,255,0.92);
+      border-radius: 20px;
+      backdrop-filter: blur(8px);
+    }
+
+    /* ── Mini preview ── */
+    .preview {
+      height: 178px; display: flex; overflow: hidden;
+      position: relative; background: var(--p-bg);
+    }
+
+    .preview::before {
+      content: ''; position: absolute; inset: 0; z-index: 0;
+      background:
+        radial-gradient(ellipse 70% 60% at 15% 20%, var(--p-g1) 0%, transparent 58%),
+        radial-gradient(ellipse 55% 55% at 85% 80%, var(--p-g2) 0%, transparent 58%);
+      pointer-events: none;
+    }
+
+    /* Sidebar */
+    .ps {
+      width: 68px; flex-shrink: 0;
+      background: var(--p-surf);
+      border-right: 1px solid var(--p-bdr);
+      padding: 10px 7px;
+      position: relative; z-index: 1;
+      display: flex; flex-direction: column; gap: 2px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+
+    .ps-logo {
+      width: 20px; height: 20px;
+      background: linear-gradient(135deg, var(--p-acc), var(--p-acc2));
+      border-radius: 5px; margin: 0 auto 8px;
+    }
+
+    .ps-item {
+      padding: 4px 5px; border-radius: 5px;
+      display: flex; align-items: center; gap: 3px;
+      color: var(--p-mut);
+    }
+    .ps-item.on { background: var(--p-tag); color: var(--p-acc); }
+    .ps-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    .ps-bar { height: 4px; border-radius: 2px; background: currentColor; flex: 1; opacity: 0.5; }
+    .ps-item.on .ps-bar { opacity: 1; }
+
+    /* Content area */
+    .pc {
+      flex: 1; min-width: 0;
+      padding: 8px;
+      display: flex; flex-direction: column; gap: 6px;
+      position: relative; z-index: 1; overflow: hidden;
+    }
+
+    .pa {
+      background: var(--p-surf);
+      border: 1px solid var(--p-bdr);
+      border-radius: 8px; padding: 6px 8px; flex-shrink: 0;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    .pa-top { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
+
+    .pa-tag {
+      font-size: 7.5px; font-weight: 700;
+      padding: 1px 5px; border-radius: 10px;
+      background: var(--p-tag); color: var(--p-acc);
+    }
+
+    .pa-date { font-size: 7.5px; color: var(--p-mut); margin-left: auto; }
+
+    .pa-title {
+      font-size: 9px; font-weight: 600;
+      color: var(--p-txt); line-height: 1.4;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .pb {
+      margin-top: auto; width: 100%;
+      padding: 5px 8px;
+      background: linear-gradient(135deg, var(--p-acc), var(--p-acc2));
+      color: white; border: none; border-radius: 6px;
+      font-size: 8.5px; font-weight: 600; font-family: inherit;
+      display: flex; align-items: center; justify-content: center; gap: 3px;
+      flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+      cursor: default;
+    }
+
+    /* ── Card info ── */
+    .info {
+      padding: 13px 16px 16px;
+      border-top: 1px solid rgba(0,0,0,0.055);
+    }
+
+    .info-name { display: flex; align-items: baseline; gap: 7px; margin-bottom: 4px; }
+    .info-en { font-size: 16px; font-weight: 700; color: #1a1a14; letter-spacing: -0.2px; }
+    .info-zh { font-size: 12.5px; color: #8a8a7a; }
+
+    .info-desc { font-size: 12px; color: #7a7a6a; line-height: 1.55; margin-bottom: 11px; }
+
+    .swatches { display: flex; gap: 5px; align-items: center; }
+    .sw {
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 1.5px solid rgba(255,255,255,0.85);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.14);
+    }
+
+    /* ── Footer ── */
+    .footer { text-align: center; }
+
+    .apply-btn {
+      padding: 13px 44px;
+      background: #1a1a14; color: white;
+      border: none; border-radius: 13px;
+      font-size: 15px; font-weight: 600; font-family: inherit; letter-spacing: -0.2px;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    .apply-btn:hover {
+      background: #2a2a1e;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    }
+    .apply-btn.done {
+      background: #4a6741;
+      box-shadow: 0 4px 16px rgba(74,103,65,0.3);
+    }
+
+    .footer-note { margin-top: 10px; font-size: 12px; color: #9a9a8a; transition: color 0.3s; }
+    .footer-note.success { color: #4a8c5c; font-weight: 500; }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      body { padding: 32px 16px 60px; }
+      .header { flex-direction: column; gap: 20px; align-items: flex-start; }
+      .card { width: 100%; max-width: 340px; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="5.5" r="2.5"/>
+          <circle cx="5.5" cy="17" r="2.5"/>
+          <circle cx="18.5" cy="17" r="2.5"/>
+          <line x1="12" y1="8" x2="6.5" y2="14.5" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="12" y1="8" x2="17.5" y2="14.5" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+          <line x1="8" y1="17" x2="16" y2="17" stroke="white" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-label">第二大脑</div>
+        <div class="brand-title">选择你的视觉主题</div>
+      </div>
+    </div>
+    <div class="mode-toggle">
+      <span class="mode-lbl on" id="lbl-l">浅色预览</span>
+      <button class="pill" id="pill" onclick="toggleMode()"></button>
+      <span class="mode-lbl" id="lbl-d">深色预览</span>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="footer">
+    <button class="apply-btn" id="apply-btn" onclick="applyTheme()">应用主题</button>
+    <p class="footer-note" id="footer-note">已选中 Sage · 原野（当前主题）</p>
+  </div>
+
+</div>
+
+<script>
+const THEMES = [
+  {
+    id: 'sage', en: 'Sage', zh: '原野', current: true,
+    desc: '苔藓与林地的自然色调，清新而沉着',
+    sw: ['#4a6741','#8a6440','#c8ceaf'],
+    glow: 'rgba(74,103,65,0.22)',
+    L: { bg:'#c8ceaf', surf:'rgba(255,255,255,0.38)', acc:'#4a6741', acc2:'#8a6440', txt:'#2a2e1e', mut:'#7a816a', bdr:'rgba(255,255,255,0.6)', tag:'rgba(74,103,65,0.14)', g1:'rgba(138,170,106,0.42)', g2:'rgba(196,154,108,0.3)' },
+    D: { bg:'#1c2215', surf:'rgba(255,255,255,0.08)', acc:'#8aaa6a', acc2:'#c49a6c', txt:'#e8eddc', mut:'#8a9478', bdr:'rgba(255,255,255,0.12)', tag:'rgba(138,170,106,0.15)', g1:'rgba(74,103,65,0.45)', g2:'rgba(138,100,60,0.3)' }
+  },
+  {
+    id: 'ink', en: 'Ink', zh: '墨水', current: false,
+    desc: '如精装书页，沉静典雅，Bear 的文学气质',
+    sw: ['#1a1a2e','#4a3728','#f7f3ec'],
+    glow: 'rgba(26,26,46,0.15)',
+    L: { bg:'#f7f3ec', surf:'rgba(255,255,255,0.78)', acc:'#1a1a2e', acc2:'#4a3728', txt:'#1a1a14', mut:'#6a6a5a', bdr:'rgba(0,0,0,0.09)', tag:'rgba(26,26,46,0.08)', g1:'rgba(210,200,175,0.5)', g2:'rgba(190,165,130,0.3)' },
+    D: { bg:'#0f0e0c', surf:'rgba(255,255,255,0.06)', acc:'#e8d5b0', acc2:'#c4a882', txt:'#f0ead8', mut:'#8a826a', bdr:'rgba(255,255,255,0.09)', tag:'rgba(232,213,176,0.12)', g1:'rgba(60,50,30,0.7)', g2:'rgba(40,30,15,0.5)' }
+  },
+  {
+    id: 'dusk', en: 'Dusk', zh: '暮色', current: false,
+    desc: '紫罗兰调，充满创意活力，Linear 的现代感',
+    sw: ['#5b4fcf','#9b6fd4','#f0eef8'],
+    glow: 'rgba(91,79,207,0.22)',
+    L: { bg:'#f0eef8', surf:'rgba(255,255,255,0.65)', acc:'#5b4fcf', acc2:'#9b6fd4', txt:'#1a1730', mut:'#7a749a', bdr:'rgba(91,79,207,0.14)', tag:'rgba(91,79,207,0.1)', g1:'rgba(155,111,212,0.28)', g2:'rgba(91,79,207,0.18)' },
+    D: { bg:'#120f1e', surf:'rgba(255,255,255,0.07)', acc:'#9b8fff', acc2:'#c49bff', txt:'#e8e4ff', mut:'#8a84aa', bdr:'rgba(255,255,255,0.10)', tag:'rgba(155,143,255,0.15)', g1:'rgba(91,79,207,0.45)', g2:'rgba(155,111,212,0.28)' }
+  },
+  {
+    id: 'sand', en: 'Sand', zh: '沙丘', current: false,
+    desc: '温暖陶土色，像粗粝质感的皮革笔记本',
+    sw: ['#b85c38','#8a6840','#f2ece3'],
+    glow: 'rgba(184,92,56,0.22)',
+    L: { bg:'#f2ece3', surf:'rgba(255,255,255,0.62)', acc:'#b85c38', acc2:'#8a6840', txt:'#2a1f14', mut:'#8a7464', bdr:'rgba(184,92,56,0.16)', tag:'rgba(184,92,56,0.1)', g1:'rgba(225,170,120,0.38)', g2:'rgba(184,92,56,0.2)' },
+    D: { bg:'#1a1208', surf:'rgba(255,255,255,0.07)', acc:'#e8845a', acc2:'#c4a060', txt:'#f0e8d8', mut:'#9a8878', bdr:'rgba(255,255,255,0.10)', tag:'rgba(232,132,90,0.15)', g1:'rgba(184,92,56,0.42)', g2:'rgba(138,104,64,0.32)' }
+  },
+  {
+    id: 'slate', en: 'Slate', zh: '石板', current: false,
+    desc: '冷峻蓝灰调，专业克制，Notion 的精度感',
+    sw: ['#3b5bdb','#1098ad','#eef1f5'],
+    glow: 'rgba(59,91,219,0.2)',
+    L: { bg:'#eef1f5', surf:'rgba(255,255,255,0.72)', acc:'#3b5bdb', acc2:'#1098ad', txt:'#1e2030', mut:'#6a7490', bdr:'rgba(59,91,219,0.12)', tag:'rgba(59,91,219,0.1)', g1:'rgba(59,91,219,0.16)', g2:'rgba(16,152,173,0.13)' },
+    D: { bg:'#0e1117', surf:'rgba(255,255,255,0.07)', acc:'#748ffc', acc2:'#4cc9f0', txt:'#e2e8f0', mut:'#8090b0', bdr:'rgba(255,255,255,0.10)', tag:'rgba(116,143,252,0.15)', g1:'rgba(59,91,219,0.32)', g2:'rgba(76,201,240,0.2)' }
+  }
+];
+
+let dark = false;
+let selected = 'sage';
+
+function applyVars(el, c) {
+  el.style.setProperty('--p-bg',   c.bg);
+  el.style.setProperty('--p-surf', c.surf);
+  el.style.setProperty('--p-acc',  c.acc);
+  el.style.setProperty('--p-acc2', c.acc2);
+  el.style.setProperty('--p-txt',  c.txt);
+  el.style.setProperty('--p-mut',  c.mut);
+  el.style.setProperty('--p-bdr',  c.bdr);
+  el.style.setProperty('--p-tag',  c.tag);
+  el.style.setProperty('--p-g1',   c.g1);
+  el.style.setProperty('--p-g2',   c.g2);
+}
+
+function build() {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+
+  THEMES.forEach(t => {
+    const c = dark ? t.D : t.L;
+    const sel = selected === t.id;
+
+    const div = document.createElement('div');
+    div.className = 'card' + (sel ? ' selected' : '');
+    div.dataset.id = t.id;
+    div.style.setProperty('--c-accent', c.acc);
+    div.style.setProperty('--c-glow', t.glow);
+    div.onclick = () => pick(t.id);
+
+    const swHTML = t.sw.map(s => `<div class="sw" style="background:${s}"></div>`).join('');
+
+    div.innerHTML = `
+      ${t.current ? '<div class="cur-badge">当前主题</div>' : ''}
+      <div class="check">
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+      </div>
+      <div class="preview" id="pv-${t.id}">
+        <div class="ps">
+          <div class="ps-logo"></div>
+          <div class="ps-item on"><div class="ps-dot"></div><div class="ps-bar"></div></div>
+          <div class="ps-item"><div class="ps-dot"></div><div class="ps-bar"></div></div>
+          <div class="ps-item"><div class="ps-dot"></div><div class="ps-bar"></div></div>
+          <div class="ps-item"><div class="ps-dot"></div><div class="ps-bar"></div></div>
+        </div>
+        <div class="pc">
+          <div class="pa">
+            <div class="pa-top">
+              <div class="pa-tag">URL</div>
+              <div class="pa-date">今天</div>
+            </div>
+            <div class="pa-title">AI 的未来：从工具到协作伙伴</div>
+          </div>
+          <div class="pa">
+            <div class="pa-top">
+              <div class="pa-tag">YouTube</div>
+              <div class="pa-date">昨天</div>
+            </div>
+            <div class="pa-title">Karpathy 神经网络直觉入门</div>
+          </div>
+          <button class="pb">＋ 添加内容</button>
+        </div>
+      </div>
+      <div class="info">
+        <div class="info-name">
+          <span class="info-en">${t.en}</span>
+          <span class="info-zh">${t.zh}</span>
+        </div>
+        <p class="info-desc">${t.desc}</p>
+        <div class="swatches">${swHTML}</div>
+      </div>
+    `;
+
+    grid.appendChild(div);
+    applyVars(document.getElementById(`pv-${t.id}`), c);
+  });
+
+  updateFooter();
+}
+
+function pick(id) {
+  selected = id;
+  document.querySelectorAll('.card').forEach(card => {
+    const t = THEMES.find(x => x.id === card.dataset.id);
+    const c = (dark ? t.D : t.L).acc;
+    const isSel = card.dataset.id === id;
+    card.classList.toggle('selected', isSel);
+    card.style.setProperty('--c-accent', c);
+  });
+  // Reset apply button if user changes selection
+  const btn = document.getElementById('apply-btn');
+  btn.classList.remove('done');
+  btn.textContent = '应用主题';
+  const note = document.getElementById('footer-note');
+  note.classList.remove('success');
+  updateFooter();
+}
+
+function updateFooter() {
+  const t = THEMES.find(x => x.id === selected);
+  const note = document.getElementById('footer-note');
+  if (!note.classList.contains('success')) {
+    note.textContent = t.current
+      ? `已选中 ${t.en} · ${t.zh}（当前主题）`
+      : `已选中 ${t.en} · ${t.zh}`;
+  }
+}
+
+function toggleMode() {
+  dark = !dark;
+  document.getElementById('pill').classList.toggle('dark', dark);
+  document.getElementById('lbl-l').classList.toggle('on', !dark);
+  document.getElementById('lbl-d').classList.toggle('on', dark);
+
+  THEMES.forEach(t => {
+    const pv = document.getElementById(`pv-${t.id}`);
+    if (pv) applyVars(pv, dark ? t.D : t.L);
+    const card = document.querySelector(`.card[data-id="${t.id}"]`);
+    if (card) card.style.setProperty('--c-accent', (dark ? t.D : t.L).acc);
+  });
+}
+
+function applyTheme() {
+  const t = THEMES.find(x => x.id === selected);
+  const btn = document.getElementById('apply-btn');
+  const note = document.getElementById('footer-note');
+  btn.classList.add('done');
+  btn.textContent = '✓ 已应用';
+  note.textContent = `「${t.en} · ${t.zh}」主题应用成功`;
+  note.classList.add('success');
+}
+
+build();
+</script>
+</body>
+</html>
