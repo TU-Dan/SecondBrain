@@ -123,19 +123,20 @@ def _score_items(items: list[dict], user_tags: list[str], topic: str) -> list[in
 def run_discovery_sync() -> dict:
     """
     Synchronous entry point — call via asyncio.to_thread from async context.
-    Returns: {ok, added, tags_searched, reason?}
+    Returns: {ok, added, tags_searched, items, reason?}
     """
     if not SERPER_API_KEY:
         log.warning("[discovery] SERPER_API_KEY not set — skipping.")
-        return {"ok": False, "reason": "SERPER_API_KEY 未配置", "added": 0}
+        return {"ok": False, "reason": "SERPER_API_KEY 未配置", "added": 0, "items": []}
 
     tags = list_all_tags()
     if not tags:
-        return {"ok": False, "reason": "知识库暂无标签", "added": 0}
+        return {"ok": False, "reason": "知识库暂无标签", "added": 0, "items": []}
 
     top_tags = [t["tag"] for t in tags[:MAX_TAGS]]
     all_tags = [t["tag"] for t in tags[:20]]
     total_added = 0
+    added_items: list[dict] = []
 
     log.info(f"[discovery] searching for tags: {top_tags}")
 
@@ -175,12 +176,24 @@ def run_discovery_sync() -> dict:
                         priority="normal",
                     )
                     total_added += 1
+                    added_items.append({
+                        "title": item["title"],
+                        "url": item["url"],
+                        "description": item.get("description", ""),
+                        "tag": tag,
+                        "score": score,
+                    })
                     log.info(
                         f"[discovery] added (score={score}): {item['title'][:60]}"
                     )
 
     log.info(f"[discovery] run complete. added={total_added}")
-    return {"ok": True, "added": total_added, "tags_searched": top_tags}
+    return {
+        "ok": True,
+        "added": total_added,
+        "tags_searched": top_tags,
+        "items": added_items,
+    }
 
 
 async def run_daily_discovery() -> dict:

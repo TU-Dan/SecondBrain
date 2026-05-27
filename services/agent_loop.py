@@ -203,6 +203,42 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "run_discovery",
+            "description": "主动搜索互联网，根据用户的兴趣标签发现今日新内容，并写入收件箱。用户说【发现新内容】【今天有什么新东西】【帮我找最新内容】时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_inbox",
+            "description": "列出收件箱中待处理的内容（包括 AI 发现的新文章、RSS 推荐、手动添加的链接）。用户问【收件箱有什么】【有哪些待读】时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "enum": ["all", "read", "podcast", "todo"],
+                        "description": "按意图筛选，默认 all",
+                        "default": "all"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "最多返回条数，默认 20",
+                        "default": 20
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "propose_js",
             "description": "创建一个需要用户确认后才会在浏览器中执行的 JavaScript 提案。用于修改当前页面、调用页面 API、组合多个页面操作。不要直接声称已经执行。",
             "parameters": {
@@ -236,6 +272,8 @@ TOOL_THINKING = {
     "list_recent_articles": lambda args: "查看最近文章…",
     "get_brain_stats": lambda args: "读取大脑统计…",
     "fetch_url": lambda args: f"抓取网页：{args.get('url', '')}",
+    "run_discovery": lambda args: "搜索互联网，发现新内容…",
+    "list_inbox": lambda args: "读取收件箱…",
     "propose_js": lambda args: f"创建操作提案：{args.get('title', '')}",
 }
 
@@ -492,6 +530,44 @@ def _execute_tool(name: str, args: dict, page_context: dict | None = None) -> st
             return header + content[:max_chars]
         except Exception as e:
             return f"抓取失败：{e}"
+
+    elif name == "run_discovery":
+        from services.discovery import run_discovery_sync
+        result = run_discovery_sync()
+        if not result.get("ok"):
+            return f"发现失败：{result.get('reason', '未知错误')}"
+        items = result.get("items", [])
+        added = result.get("added", 0)
+        tags = result.get("tags_searched", [])
+        if added == 0:
+            return f"搜索了主题「{'、'.join(tags)}」，没有发现评分足够高的新内容（可能今日重复较多）。"
+        lines = [f"发现 {added} 条新内容，搜索主题：{'、'.join(tags)}\n"]
+        for item in items:
+            lines.append(
+                f"- **{item['title']}**（{item['tag']}，评分 {item['score']}）\n"
+                f"  {item.get('description', '')[:80]}\n"
+                f"  {item['url']}"
+            )
+        return "\n".join(lines)
+
+    elif name == "list_inbox":
+        intent = args.get("intent", "all")
+        limit = min(args.get("limit", 20), 50)
+        items = db.list_unified_inbox(intent=None if intent == "all" else intent, limit=limit)
+        if not items:
+            return "收件箱暂无待处理内容。"
+        lines = [f"收件箱共 {len(items)} 条待处理内容：\n"]
+        for item in items:
+            tag = item.get("intent", "read")
+            source = item.get("source", "")
+            note = item.get("note") or item.get("description") or ""
+            lines.append(
+                f"- [{tag}] **{item.get('title', '无标题')}**"
+                + (f"（{source}）" if source else "")
+                + (f"\n  {note[:60]}" if note else "")
+                + (f"\n  {item.get('url', '')}" if item.get("url") else "")
+            )
+        return "\n".join(lines)
 
     elif name == "propose_js":
         from services.agent_proposals import create_js_proposal
