@@ -52,11 +52,8 @@ def _search(query: str, num: int = RESULTS_PER_QUERY) -> list[dict]:
     try:
         resp = cffi_requests.post(
             "https://google.serper.dev/search",
-            headers={
-                "X-API-KEY": SERPER_API_KEY,
-                "Content-Type": "application/json",
-            },
-            content=json.dumps({"q": query, "num": num, "gl": "cn", "hl": "zh-cn"}),
+            headers={"X-API-KEY": SERPER_API_KEY},
+            json={"q": query, "num": num, "gl": "cn", "hl": "zh-cn"},
             timeout=12,
         )
         resp.raise_for_status()
