@@ -52,7 +52,9 @@ def _build_feed(base_url: str, episodes: list, self_url: str = None) -> object:
     fg.podcast.itunes_image(CHANNEL_IMAGE)
     fg.podcast.itunes_owner(name=CHANNEL_AUTHOR, email=CHANNEL_EMAIL)
 
-    for ep in episodes:
+    # feedgen serializes entries in reverse insertion order, so add oldest first
+    # to keep the final RSS XML ordered newest first.
+    for ep in reversed(episodes):
         fe = fg.add_entry()
         fe.id(ep['audio_url'])
         fe.title(ep['title'])

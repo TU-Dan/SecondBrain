@@ -23,6 +23,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "packages", "content-to-podcast"))
+
+from content_to_podcast import PodcastGenerationOptions, generate_podcast
 from curl_cffi import requests as cffi_requests
 from services.extractor import extract_content, download_youtube_audio
 from services.llm import distill_and_translate, format_transcript, chunk_text, polish_chunk, detect_language, generate_tags, generate_title, generate_social_post, extract_insights, generate_daily_brief, CHUNK_THRESHOLD
@@ -175,194 +178,52 @@ def save_script(title: str, script: str, part_label: str = "") -> str:
 
 
 def process_content_task(job_id: str, source: str, source_type: str, title: str, base_url: str, voice: str, use_original_audio: bool = False):
-    source_url = source if source_type in ("url", "youtube") else None
-
     try:
-        # 1. Extract text + thumbnail
-        update_job(job_id, "extracting", "正在提取内容...")
-        text, thumbnail_url = extract_content(source, source_type)
-        if not text:
-            update_job(job_id, "error", "内容提取失败，请检查链接或文件。")
-            return
+        def on_status(status: str, message: str, file: dict = None):
+            update_job(job_id, status, message, file=file)
 
-        # Auto-generate title if not provided
-        if not title.strip():
-            update_job(job_id, "extracting", "正在生成标题...")
-            title = generate_title(text)
-            jobs[job_id]["title"] = title
-
-        print(f"[{job_id}] Starting: {title}")
-
-        # Download thumbnail if available
-        episode_image = None
-        if thumbnail_url:
-            episode_image = download_thumbnail(thumbnail_url)
-
-        # 2. Save transcript
-        transcript_url = save_transcript(title, text, source_type)
-        update_job(job_id, "processing", "正在保存逐字稿...", file={
-            "label": "原始逐字稿",
-            "url": transcript_url
-        })
-
-        # 3. LLM processing + audio
-        if use_original_audio and source_type == "youtube":
-            # Structure the transcript without losing content, then use original audio
-            update_job(job_id, "processing", "正在整理文字稿...")
-            result = format_transcript(text)
-            if not result:
-                update_job(job_id, "error", "LLM 处理失败，请检查 API Key。")
-                return
-            script, tags = result
-
-            script_url = save_script(title, script)
-            update_job(job_id, "generating_audio", "正在下载原始音频...", file={
-                "label": "播客文稿",
-                "url": script_url
-            })
-            audio_filename = download_youtube_audio(source)
-            if not audio_filename:
-                update_job(job_id, "error", "原始音频下载失败，请检查链接。")
-                return
-            audio_mime = "audio/mpeg"
-
-            audio_path = os.path.join("static/audio", audio_filename)
-            audio_url = f"{base_url}/static/audio/{audio_filename}"
-            audio_length = os.path.getsize(audio_path)
-
-            add_episode(
+        result = generate_podcast(
+            PodcastGenerationOptions(
+                source=source,
+                source_type=source_type,
                 title=title,
-                description=clean_description(text[:300]) + "...",
-                audio_filename=audio_filename,
-                audio_length=audio_length,
                 base_url=base_url,
-                episode_image=episode_image,
-                audio_mime=audio_mime,
+                voice=voice,
+                use_original_audio=use_original_audio,
+            ),
+            on_status=on_status,
+        )
+        jobs[job_id]["title"] = result.title
+        print(f"[{job_id}] Generated: {result.title}")
+
+        for item in result.items:
+            add_episode(
+                title=item.title,
+                description=item.description,
+                audio_filename=item.audio_filename,
+                audio_length=item.audio_length,
+                base_url=base_url,
+                episode_image=item.image_url,
+                audio_mime=item.audio_mime,
             )
             article_id = add_article(
-                title=title,
-                source_url=source_url,
-                source_type=source_type,
-                summary=clean_description(text[:300]) + "...",
-                article_md_path=script_url,
-                transcript_path=transcript_url,
-                audio_url=audio_url,
-                audio_length=audio_length,
-                image_url=episode_image,
-                word_count=len(script),
+                title=item.title,
+                source_url=result.source_url,
+                source_type=result.source_type,
+                summary=item.description,
+                article_md_path=item.script_url,
+                transcript_path=item.transcript_url,
+                audio_url=item.audio_url,
+                audio_length=item.audio_length,
+                image_url=item.image_url,
+                word_count=item.word_count,
             )
-            if tags:
-                update_tags(article_id, tags)
+            if item.tags:
+                update_tags(article_id, item.tags)
             threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
-
-        elif len(text) <= CHUNK_THRESHOLD:
-            update_job(job_id, "processing", "正在使用 DeepSeek 处理内容...")
-            result = distill_and_translate(text)
-            if not result:
-                update_job(job_id, "error", "LLM 处理失败，请检查 API Key。")
-                return
-            script, tags = result
-
-            script_url = save_script(title, script)
-            update_job(job_id, "generating_audio", "正在生成音频...", file={
-                "label": "播客文稿",
-                "url": script_url
-            })
-            audio_filename = generate_audio_sync(script, voice=voice)
-            audio_mime = "audio/mpeg"
-
-            audio_path = os.path.join("static/audio", audio_filename)
-            audio_url = f"{base_url}/static/audio/{audio_filename}"
-            audio_length = os.path.getsize(audio_path)
-
-            add_episode(
-                title=title,
-                description=clean_description(text[:300]) + "...",
-                audio_filename=audio_filename,
-                audio_length=audio_length,
-                base_url=base_url,
-                episode_image=episode_image,
-                audio_mime=audio_mime,
-            )
-            article_id = add_article(
-                title=title,
-                source_url=source_url,
-                source_type=source_type,
-                summary=clean_description(text[:300]) + "...",
-                article_md_path=script_url,
-                transcript_path=transcript_url,
-                audio_url=audio_url,
-                audio_length=audio_length,
-                image_url=episode_image,
-                word_count=len(script),
-            )
-            if tags:
-                update_tags(article_id, tags)
-                print(f"[{job_id}] Tags: {tags}")
-            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
-
-        else:
-            chunks = chunk_text(text)
-            total = len(chunks)
-            update_job(job_id, "processing", f"内容较长，分为 {total} 段处理...")
-
-            # Generate tags once from title + first chunk sample
-            tags = generate_tags(title, chunks[0])
-            if tags:
-                print(f"[{job_id}] Tags (chunked): {tags}")
-
-            article_ids = []
-            for i, chunk in enumerate(chunks):
-                part_label = f"第{i + 1}段_共{total}段"
-                part_display = f"（第{i + 1}段/共{total}段）"
-                part_title = f"{title} {part_display}"
-
-                update_job(job_id, "processing", f"正在处理第 {i + 1}/{total} 段...")
-                polished = polish_chunk(chunk, i, total)
-                if not polished:
-                    print(f"[{job_id}] Skipping part {i + 1} due to LLM error.")
-                    continue
-
-                script_url = save_script(title, polished, part_label)
-                update_job(job_id, "generating_audio", f"正在生成第 {i + 1}/{total} 段音频...", file={
-                    "label": f"播客文稿 {part_display}",
-                    "url": script_url
-                })
-
-                audio_filename = generate_audio_sync(polished, voice=voice)
-                audio_path = os.path.join("static/audio", audio_filename)
-                audio_url = f"{base_url}/static/audio/{audio_filename}"
-                audio_length = os.path.getsize(audio_path)
-
-                add_episode(
-                    title=part_title,
-                    description=clean_description(chunk[:300]) + "...",
-                    audio_filename=audio_filename,
-                    audio_length=audio_length,
-                    base_url=base_url,
-                    episode_image=episode_image,
-                )
-                article_id = add_article(
-                    title=part_title,
-                    source_url=source_url,
-                    source_type=source_type,
-                    summary=clean_description(chunk[:300]) + "...",
-                    article_md_path=script_url,
-                    transcript_path=transcript_url,
-                    audio_url=audio_url,
-                    audio_length=audio_length,
-                    image_url=episode_image,
-                    word_count=len(polished),
-                )
-                article_ids.append(article_id)
-
-            # Apply same tags to all parts
-            if tags:
-                for aid in article_ids:
-                    update_tags(aid, tags)
 
         file_count = len(jobs[job_id]['files'])
-        print(f"[{job_id}] Finished: {title}")
+        print(f"[{job_id}] Finished: {result.title}")
 
         # Auto-publish to GitHub Pages if configured
         if os.getenv("GITHUB_PAGES_URL"):
