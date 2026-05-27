@@ -899,49 +899,10 @@ async def api_run_discovery():
 
 @app.get("/api/discovery/debug")
 async def api_discovery_debug():
-    """Step-by-step diagnostic: check API key, tags, search results, and scores."""
-    import os
-    from services.db import list_all_tags
-    from services.discovery import _search, _score_items, _already_seen, MIN_SCORE
-
-    out = {}
-
-    # 1. API key
-    key = os.getenv("SERPER_API_KEY")
-    out["serper_key"] = f"set ({key[:8]}...)" if key else "MISSING"
-
-    # 2. Tags
-    tags = list_all_tags()
-    out["top_tags"] = [t["tag"] for t in tags[:10]]
-
-    if not tags or not key:
-        return JSONResponse(out)
-
-    # 3. Do one real search for the top tag
-    top_tag = tags[0]["tag"]
-    query = f"{top_tag} 深度解析 OR 教程 OR 趋势"
-    out["query"] = query
-    results = _search(query, num=5)
-    out["raw_results_count"] = len(results)
-    out["raw_results"] = [{"title": r["title"], "url": r["url"]} for r in results]
-
-    # 4. Dedup check
-    fresh = [r for r in results if not _already_seen(r["url"])]
-    out["after_dedup_count"] = len(fresh)
-    out["already_seen_urls"] = [r["url"] for r in results if _already_seen(r["url"])]
-
-    # 5. Score
-    if fresh:
-        user_tags = [t["tag"] for t in tags[:20]]
-        scores = _score_items(fresh, user_tags, top_tag)
-        out["scores"] = [
-            {"title": item["title"], "score": score, "passes": score >= MIN_SCORE}
-            for item, score in zip(fresh, scores)
-        ]
-        out["min_score_threshold"] = MIN_SCORE
-        out["would_add"] = sum(1 for s in scores if s >= MIN_SCORE)
-
-    return JSONResponse(out)
+    """Run a full discovery cycle and return step-by-step trace."""
+    from services.discovery import run_discovery_sync
+    result = await asyncio.to_thread(run_discovery_sync)
+    return JSONResponse(result)
 
 
 @app.get("/api/inbox")
