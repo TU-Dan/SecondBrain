@@ -1,0 +1,11 @@
+[project]
+name = "content-to-podcast"
+version = "0.1.0"
+description = "Turn URLs, videos, PDFs, and text into podcast scripts, transcripts, and audio."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["content_to_podcast*"]

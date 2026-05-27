@@ -17,6 +17,7 @@ import os
 import sys
 import shutil
 import subprocess
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -38,6 +39,19 @@ WORKTREE = ".pages-publish-workdir"
 EPISODES_FILE = ROOT / "static" / "episodes.json"
 GIT_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_GIT_TIMEOUT_SECONDS", "600"))
 HTTP_USER_AGENT = "Mozilla/5.0 SecondBrainPodcastPublisher/1.0"
+
+
+def remove_worktree():
+    """Remove the temporary publish checkout, retrying transient macOS rmtree races."""
+    path = Path(WORKTREE)
+    if not path.exists():
+        return
+    for _ in range(3):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        time.sleep(0.2)
+    shutil.rmtree(path)
 
 
 def command_env() -> dict[str, str]:
@@ -208,8 +222,7 @@ def publish() -> str:
         init_gh_pages()
 
     # Clean up any leftover checkout
-    if Path(WORKTREE).exists():
-        shutil.rmtree(WORKTREE)
+    remove_worktree()
 
     run_with_https_fallback([
         "git",
@@ -230,14 +243,14 @@ def publish() -> str:
         audio_dst.mkdir(exist_ok=True)
         Path(f"{WORKTREE}/.nojekyll").touch()
 
-        # Copy new audio files
+        # Copy new or changed audio files
         copied = 0
         for f in audio_src.glob("*.mp3"):
             dst = audio_dst / f.name
-            if not dst.exists():
+            if not dst.exists() or f.stat().st_size != dst.stat().st_size:
                 shutil.copy2(f, dst)
                 copied += 1
-        print(f"Copied {copied} new audio file(s).")
+        print(f"Copied {copied} new or changed audio file(s).")
 
         # Copy new images
         images_src = ROOT / "static" / "images"
@@ -247,10 +260,10 @@ def publish() -> str:
             copied_imgs = 0
             for f in images_src.iterdir():
                 dst = images_dst / f.name
-                if not dst.exists():
+                if not dst.exists() or f.stat().st_size != dst.stat().st_size:
                     shutil.copy2(f, dst)
                     copied_imgs += 1
-            print(f"Copied {copied_imgs} new image(s).")
+            print(f"Copied {copied_imgs} new or changed image(s).")
 
         # Regenerate podcast.xml with GitHub Pages URLs
         generate_rss_for_export(PAGES_URL, f"{WORKTREE}/podcast.xml")
@@ -277,7 +290,7 @@ def publish() -> str:
             print(f"Cloudflare Pages will deploy: {PAGES_URL}/podcast.xml")
 
     finally:
-        shutil.rmtree(WORKTREE, ignore_errors=True)
+        remove_worktree()
 
     return f"{PAGES_URL}/podcast.xml"
 
