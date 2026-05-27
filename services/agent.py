@@ -65,6 +65,24 @@ async def task_daily_brief():
         db.add_evolution_log("scheduler_failed", f"{today} 今日知识简报失败：{e}")
 
 
+async def task_daily_discovery():
+    """06:30 daily: search web for content matching user's interest tags."""
+    log.info("[agent] running daily discovery...")
+    try:
+        from services.discovery import run_daily_discovery
+        result = await run_daily_discovery()
+        added = result.get("added", 0)
+        tags = result.get("tags_searched", [])
+        db.add_evolution_log(
+            "scheduler_completed",
+            f"每日发现完成：新增 {added} 条内容，搜索主题：{'、'.join(tags)}",
+        )
+        log.info(f"[agent] discovery done: {result}")
+    except Exception as e:
+        log.exception("[agent] daily discovery error")
+        db.add_evolution_log("scheduler_failed", f"每日发现失败：{e}")
+
+
 async def task_weekly_synthesis():
     """Monday 08:00: agent自主综合本周知识，写洞察。"""
     log.info("[agent] running weekly synthesis via agent loop...")
@@ -138,6 +156,10 @@ def start():
     # Every few minutes: run one autonomous task from the queue.
     _scheduler.add_job(task_run_agent_queue, "interval", minutes=3, id="agent_task_queue",
                        next_run_time=datetime.now())
+
+    # Daily 06:30: discovery — search web for interest-matched content
+    _scheduler.add_job(task_daily_discovery, CronTrigger(hour=6, minute=30),
+                       id="daily_discovery")
 
     # Daily 07:00: brief
     _scheduler.add_job(task_daily_brief, CronTrigger(hour=7, minute=0),

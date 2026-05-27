@@ -36,6 +36,8 @@ from services.db import (
     delete_article, update_article_title, update_insights,
     add_feed, list_feeds, delete_feed,
     list_inbox, count_inbox, update_feed_item_status, get_article,
+    add_inbox_item, count_unified_inbox, delete_inbox_item, get_inbox_item,
+    list_unified_inbox, update_inbox_item,
 )
 from services.feeds import refresh_all_feeds, refresh_feed, resolve_feed_url
 
@@ -270,6 +272,11 @@ async def card_page(request: Request):
 @app.get("/generate", response_class=HTMLResponse)
 async def generate_page(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
+
+
+@app.get("/capture", response_class=HTMLResponse)
+async def capture_page(request: Request):
+    return templates.TemplateResponse(request=request, name="capture.html")
 
 
 @app.get("/api/brief")
@@ -882,15 +889,85 @@ async def api_refresh_feeds():
     return JSONResponse({"ok": True, "new_items": n})
 
 
+@app.post("/api/discovery/run")
+async def api_run_discovery():
+    """Manually trigger a discovery run."""
+    from services.discovery import run_daily_discovery
+    result = await run_daily_discovery()
+    return JSONResponse(result)
+
+
 @app.get("/api/inbox")
-async def api_inbox(min_score: int = 0):
-    items = list_inbox(min_score)
+async def api_inbox(min_score: int = 0, intent: str = None):
+    items = list_unified_inbox(intent=intent, min_score=min_score)
     return JSONResponse({"items": items, "count": len(items)})
 
 
 @app.get("/api/inbox/count")
 async def api_inbox_count():
-    return JSONResponse({"count": count_inbox()})
+    return JSONResponse({"count": count_unified_inbox()})
+
+
+@app.post("/api/inbox/items")
+async def api_create_inbox_item(request: Request):
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    title = (body.get("title") or "").strip()
+    note = (body.get("note") or "").strip()
+    description = (body.get("description") or "").strip()
+    intent = (body.get("intent") or ("read" if url else "todo")).strip()
+    priority = (body.get("priority") or "normal").strip()
+
+    if not title and not url and not note:
+        return JSONResponse({"ok": False, "error": "title, url, or note required"}, status_code=400)
+
+    if not title:
+        title = url or note[:60] or "未命名"
+
+    item_id = add_inbox_item(
+        title=title,
+        url=url or None,
+        intent=intent,
+        description=description or None,
+        note=note or None,
+        priority=priority,
+        source=body.get("source") or "manual",
+    )
+    return JSONResponse({"ok": True, "id": item_id})
+
+
+@app.patch("/api/inbox/items/{item_id}")
+async def api_patch_inbox_item(item_id: str, request: Request):
+    body = await request.json()
+    allowed = {"intent", "title", "url", "description", "note", "status", "priority"}
+    fields = {k: body[k] for k in allowed if k in body}
+    ok = update_inbox_item(item_id, **fields)
+    return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
+@app.delete("/api/inbox/items/{item_id}")
+async def api_delete_inbox_item(item_id: str):
+    ok = delete_inbox_item(item_id)
+    return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
+@app.post("/api/inbox/items/{item_id}/podcast")
+async def api_inbox_item_to_podcast(item_id: str, request: Request, background_tasks: BackgroundTasks):
+    item = get_inbox_item(item_id)
+    if not item:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    url = (item.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "这条收件箱内容没有 URL，无法生成播客"}, status_code=400)
+
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
+    source_type = 'youtube' if 'youtube.com' in url or 'youtu.be' in url else 'url'
+    base_url = str(request.base_url).rstrip('/')
+    title = item.get("title") or ""
+    update_inbox_item(item_id, status="processing")
+    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, "zh-CN-YunxiNeural", True)
+    return JSONResponse({"ok": True, "job_id": job_id})
 
 
 @app.post("/api/inbox/{item_id}/save")
