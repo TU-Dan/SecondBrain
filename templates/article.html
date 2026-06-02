@@ -175,6 +175,33 @@
         .btn-save:disabled { opacity: 0.45; cursor: not-allowed; }
         .btn-save svg { width: 12px; height: 12px; }
 
+        .btn-edit {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 6px 12px;
+            background: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-size: 12.5px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: border-color 0.15s, color 0.15s, background 0.15s;
+            white-space: nowrap;
+        }
+        .btn-edit:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: var(--accent-glow);
+        }
+        .btn-edit svg { width: 12px; height: 12px; }
+
+        .editing-only { display: none; }
+        body.edit-mode .editing-only { display: inline-flex; }
+        body.edit-mode .reading-only { display: none; }
+
         .save-status {
             font-size: 11.5px;
             color: var(--text-muted);
@@ -270,6 +297,20 @@
             display: flex;
             flex: 1;
             overflow: hidden;
+        }
+
+        .panes:not(.editing) #pane-left,
+        .panes:not(.editing) #resize-handle {
+            display: none;
+        }
+
+        .panes.editing #pane-right,
+        .panes.editing #resize-handle {
+            display: none;
+        }
+
+        .panes.editing #pane-left {
+            flex: 1;
         }
 
         .pane {
@@ -1171,9 +1212,17 @@
     <span class="toolbar-meta" id="toolbar-meta">{{ article.created_at[:10] if article.created_at else '' }}</span>
     <div class="tag-row" id="tag-row"></div>
     <span class="save-status" id="save-status"></span>
-    <button class="btn-save" id="save-btn" onclick="saveContent()">
+    <button class="btn-edit reading-only" id="edit-btn" onclick="enterEditMode()">
+        <svg fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        编辑
+    </button>
+    <button class="btn-save editing-only" id="save-btn" onclick="saveContent()">
         <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
         保存
+    </button>
+    <button class="btn-edit editing-only" id="done-edit-btn" onclick="exitEditMode(true)">
+        <svg fill="none" stroke="currentColor" stroke-width="2.3" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+        完成
     </button>
     <button class="btn-theme" onclick="toggleTheme()" title="切换主题">
         <svg id="theme-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"></svg>
@@ -1190,7 +1239,7 @@
     <div class="pane" id="pane-left">
         <div class="pane-header">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-            源码
+            Markdown
             <span class="wc-chip" id="wc-chip"></span>
         </div>
         <textarea class="editor" id="editor" spellcheck="false"></textarea>
@@ -1335,11 +1384,36 @@
     };
     let dirty = false;
     let saveTimer = null;
+    let editMode = false;
 
     const editor = document.getElementById('editor');
     const preview = document.getElementById('preview');
+    const panesEl = document.getElementById('panes');
 
     marked.setOptions({ breaks: true, gfm: true });
+
+    function setEditMode(enabled) {
+        editMode = enabled;
+        document.body.classList.toggle('edit-mode', enabled);
+        panesEl.classList.toggle('editing', enabled);
+        if (enabled) {
+            editor.focus();
+        } else {
+            renderPreview(editor.value);
+        }
+    }
+
+    function enterEditMode() {
+        setEditMode(true);
+    }
+
+    async function exitEditMode(saveFirst = false) {
+        if (saveFirst) {
+            const ok = await saveContent();
+            if (!ok) return;
+        }
+        setEditMode(false);
+    }
 
     function renderPreview(md) {
         preview.innerHTML = marked.parse(md);
@@ -1402,7 +1476,9 @@
         document.getElementById('save-status').textContent = '未保存';
         document.getElementById('save-status').className = 'save-status';
         clearTimeout(saveTimer);
-        saveTimer = setTimeout(saveContent, 2000);
+        if (editMode) {
+            saveTimer = setTimeout(saveContent, 2000);
+        }
     }
 
     editor.addEventListener('input', () => {
@@ -1412,7 +1488,7 @@
     });
 
     async function saveContent() {
-        if (!dirty) return;
+        if (!dirty) return true;
         clearTimeout(saveTimer);
         const btn = document.getElementById('save-btn');
         const status = document.getElementById('save-status');
@@ -1431,13 +1507,16 @@
                 status.textContent = '已保存';
                 status.className = 'save-status ok';
                 setTimeout(() => { if (!dirty) status.textContent = ''; }, 2000);
+                return true;
             } else {
                 status.textContent = '保存失败';
                 status.className = 'save-status err';
+                return false;
             }
         } catch (e) {
             status.textContent = '保存出错';
             status.className = 'save-status err';
+            return false;
         } finally {
             btn.disabled = false;
         }
