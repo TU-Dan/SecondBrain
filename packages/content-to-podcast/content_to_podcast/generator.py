@@ -10,23 +10,59 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Literal
 
-from services.extractor import download_youtube_audio, extract_content
-from services.llm import (
-    CHUNK_THRESHOLD,
-    chunk_text,
-    detect_language,
-    distill_and_translate,
-    format_transcript,
-    generate_tags,
-    generate_title,
-    polish_chunk,
-)
-from services.tts import generate_audio_sync
-
-SourceType = Literal["url", "youtube", "pdf", "txt"]
+SourceType = Literal["url", "youtube", "douyin", "bilibili", "wechat", "pdf", "txt"]
 StatusCallback = Callable[[str, str, dict | None], None]
 MAX_PAGES_AUDIO_BYTES = 24 * 1024 * 1024
 AUDIO_BITRATES = ("96k", "64k")
+
+
+@dataclass
+class PodcastGenerationServices:
+    extract_content: Callable[[str, SourceType], tuple[str, str | None]]
+    download_youtube_audio: Callable[[str, str], str | None]
+    generate_audio_sync: Callable[[str, str, str], str]
+    detect_language: Callable[[str], str]
+    generate_title: Callable[[str], str]
+    format_transcript: Callable[[str], tuple[str, list[str]] | None]
+    distill_and_translate: Callable[[str], tuple[str, list[str]] | None]
+    chunk_text: Callable[[str], list[str]]
+    polish_chunk: Callable[[str, int, int], str | None]
+    generate_tags: Callable[[str, str], list[str]]
+    chunk_threshold: int
+
+
+def load_default_services() -> PodcastGenerationServices:
+    """Load the Second Brain service adapters lazily.
+
+    Keeping these imports out of module import time makes this package easier to
+    inspect, test, and eventually reuse outside the main Second Brain app.
+    """
+    from services.extractor import download_youtube_audio, extract_content
+    from services.llm import (
+        CHUNK_THRESHOLD,
+        chunk_text,
+        detect_language,
+        distill_and_translate,
+        format_transcript,
+        generate_tags,
+        generate_title,
+        polish_chunk,
+    )
+    from services.tts import generate_audio_sync
+
+    return PodcastGenerationServices(
+        extract_content=extract_content,
+        download_youtube_audio=download_youtube_audio,
+        generate_audio_sync=generate_audio_sync,
+        detect_language=detect_language,
+        generate_title=generate_title,
+        format_transcript=format_transcript,
+        distill_and_translate=distill_and_translate,
+        chunk_text=chunk_text,
+        polish_chunk=polish_chunk,
+        generate_tags=generate_tags,
+        chunk_threshold=CHUNK_THRESHOLD,
+    )
 
 
 @dataclass
@@ -37,10 +73,12 @@ class PodcastGenerationOptions:
     base_url: str = "http://localhost:8000"
     voice: str = "zh-CN-YunxiNeural"
     use_original_audio: bool = False
+    summarize: bool = False
     scripts_dir: str = "static/scripts"
     transcripts_dir: str = "static/transcripts"
     audio_dir: str = "static/audio"
     images_dir: str = "static/images"
+    services: PodcastGenerationServices | None = None
 
 
 @dataclass
@@ -64,6 +102,9 @@ class PodcastGenerationResult:
     source_url: str | None
     source_type: SourceType
     transcript_url: str
+    article_script_url: str
+    article_word_count: int
+    article_summary: str
     image_url: str | None
     items: list[GeneratedPodcastItem]
     tags: list[str] = field(default_factory=list)
@@ -112,9 +153,15 @@ def download_thumbnail(thumbnail_url: str | None, images_dir: str) -> str | None
         return None
 
 
-def save_transcript(title: str, text: str, source_type: SourceType, transcripts_dir: str) -> str:
+def save_transcript(
+    title: str,
+    text: str,
+    source_type: SourceType,
+    transcripts_dir: str,
+    detect_language_fn: Callable[[str], str],
+) -> str:
     os.makedirs(transcripts_dir, exist_ok=True)
-    lang = detect_language(text)
+    lang = detect_language_fn(text)
     lang_label = "中文" if lang == "zh" else "英文"
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{sanitize_filename(title)}_逐字稿_{ts}.md"
@@ -245,24 +292,51 @@ def _make_item(
     )
 
 
+def _article_summary(script: str) -> str:
+    return clean_description(script)[:200]
+
+
+def _extract_failure_message(source_type: SourceType) -> str:
+    if source_type == "douyin":
+        return (
+            "抖音内容提取失败。请确认链接是有效作品页；短链过期、只跳到抖音首页、"
+            "或需要登录/cookie 的视频会无法提取。"
+        )
+    if source_type == "bilibili":
+        return "B站内容提取失败。请确认链接是有效视频页，且视频可公开访问。"
+    if source_type == "wechat":
+        return "微信公众号内容提取失败。请确认链接是 mp.weixin.qq.com 文章页，且文章可公开访问。"
+    return "内容提取失败，请检查链接或文件。"
+
+
 def generate_podcast(
     options: PodcastGenerationOptions,
     on_status: StatusCallback | None = None,
 ) -> PodcastGenerationResult:
-    source_url = options.source if options.source_type in ("url", "youtube") else None
+    services = options.services or load_default_services()
+    source_url = options.source if options.source_type in ("url", "youtube", "douyin", "bilibili", "wechat") else None
 
     _notify(on_status, "extracting", "正在提取内容...")
-    text, thumbnail_url = extract_content(options.source, options.source_type)
+    try:
+        text, thumbnail_url = services.extract_content(options.source, options.source_type)
+    except Exception as exc:
+        raise ValueError(str(exc) or _extract_failure_message(options.source_type)) from exc
     if not text:
-        raise ValueError("内容提取失败，请检查链接或文件。")
+        raise ValueError(_extract_failure_message(options.source_type))
 
     title = options.title.strip()
     if not title:
         _notify(on_status, "extracting", "正在生成标题...")
-        title = generate_title(text)
+        title = services.generate_title(text)
 
     image_url = download_thumbnail(thumbnail_url, options.images_dir)
-    transcript_url = save_transcript(title, text, options.source_type, options.transcripts_dir)
+    transcript_url = save_transcript(
+        title,
+        text,
+        options.source_type,
+        options.transcripts_dir,
+        services.detect_language,
+    )
     _notify(on_status, "processing", "正在保存逐字稿...", {
         "label": "原始逐字稿",
         "url": transcript_url,
@@ -270,19 +344,31 @@ def generate_podcast(
 
     items: list[GeneratedPodcastItem] = []
     tags: list[str] = []
+    article_script_url = ""
+    article_word_count = 0
+    article_summary = ""
 
-    if options.use_original_audio and options.source_type == "youtube":
-        _notify(on_status, "processing", "正在整理文字稿...")
-        result = format_transcript(text)
+    if options.use_original_audio and options.source_type in ("youtube", "douyin", "bilibili"):
+        if options.summarize:
+            _notify(on_status, "processing", "正在生成摘要版播客文稿...")
+            result = services.distill_and_translate(text)
+            script_label = "播客文稿（摘要）"
+        else:
+            _notify(on_status, "processing", "正在整理文字稿...")
+            result = services.format_transcript(text)
+            script_label = "播客文稿"
         if not result:
             raise RuntimeError("LLM 处理失败，请检查 API Key。")
         script, tags = result
         script_url = save_script(title, script, options.scripts_dir)
+        article_script_url = script_url
+        article_word_count = len(script)
+        article_summary = _article_summary(script)
         _notify(on_status, "generating_audio", "正在下载原始音频...", {
-            "label": "播客文稿",
+            "label": script_label,
             "url": script_url,
         })
-        audio_filename = download_youtube_audio(options.source, options.audio_dir)
+        audio_filename = services.download_youtube_audio(options.source, options.audio_dir)
         if not audio_filename:
             raise RuntimeError("原始音频下载失败，请检查链接。")
         _notify(on_status, "generating_audio", "正在压缩音频为 96kbps mono...")
@@ -299,18 +385,50 @@ def generate_podcast(
             tags=tags,
             audio_dir=options.audio_dir,
         ))
-    elif len(text) <= CHUNK_THRESHOLD:
-        _notify(on_status, "processing", "正在使用 DeepSeek 处理内容...")
-        result = distill_and_translate(text)
+    elif options.summarize:
+        _notify(on_status, "processing", "正在生成摘要版播客文稿...")
+        result = services.distill_and_translate(text)
         if not result:
             raise RuntimeError("LLM 处理失败，请检查 API Key。")
         script, tags = result
         script_url = save_script(title, script, options.scripts_dir)
+        article_script_url = script_url
+        article_word_count = len(script)
+        article_summary = _article_summary(script)
+        _notify(on_status, "generating_audio", "正在生成摘要版音频...", {
+            "label": "播客文稿（摘要）",
+            "url": script_url,
+        })
+        audio_filename = services.generate_audio_sync(script, options.voice, options.audio_dir)
+        _notify(on_status, "generating_audio", "正在压缩音频为 96kbps mono...")
+        audio_filename = normalize_audio_for_podcast(audio_filename, options.audio_dir)
+        items.append(_make_item(
+            title=title,
+            source_text=text,
+            script=script,
+            script_url=script_url,
+            transcript_url=transcript_url,
+            audio_filename=audio_filename,
+            base_url=options.base_url,
+            image_url=image_url,
+            tags=tags,
+            audio_dir=options.audio_dir,
+        ))
+    elif len(text) <= services.chunk_threshold:
+        _notify(on_status, "processing", "正在忠实整理文字稿...")
+        result = services.format_transcript(text)
+        if not result:
+            raise RuntimeError("LLM 处理失败，请检查 API Key。")
+        script, tags = result
+        script_url = save_script(title, script, options.scripts_dir)
+        article_script_url = script_url
+        article_word_count = len(script)
+        article_summary = _article_summary(script)
         _notify(on_status, "generating_audio", "正在生成音频...", {
             "label": "播客文稿",
             "url": script_url,
         })
-        audio_filename = generate_audio_sync(script, voice=options.voice, output_dir=options.audio_dir)
+        audio_filename = services.generate_audio_sync(script, options.voice, options.audio_dir)
         _notify(on_status, "generating_audio", "正在压缩音频为 96kbps mono...")
         audio_filename = normalize_audio_for_podcast(audio_filename, options.audio_dir)
         items.append(_make_item(
@@ -326,27 +444,29 @@ def generate_podcast(
             audio_dir=options.audio_dir,
         ))
     else:
-        chunks = chunk_text(text)
+        chunks = services.chunk_text(text)
         total = len(chunks)
         _notify(on_status, "processing", f"内容较长，分为 {total} 段处理...")
-        tags = generate_tags(title, chunks[0]) if chunks else []
+        tags = services.generate_tags(title, chunks[0]) if chunks else []
+        article_sections: list[str] = []
 
         for i, chunk in enumerate(chunks):
             part_label = f"第{i + 1}段_共{total}段"
             part_display = f"（第{i + 1}段/共{total}段）"
             part_title = f"{title} {part_display}"
             _notify(on_status, "processing", f"正在处理第 {i + 1}/{total} 段...")
-            polished = polish_chunk(chunk, i, total)
+            polished = services.polish_chunk(chunk, i, total)
             if not polished:
                 print(f"Skipping part {i + 1} due to LLM error.")
                 continue
+            article_sections.append(f"## 第 {i + 1}/{total} 段\n\n{polished}")
 
-            script_url = save_script(title, polished, options.scripts_dir, part_label)
+            script_url = save_script(title, polished, os.path.join(options.scripts_dir, "episodes"), part_label)
             _notify(on_status, "generating_audio", f"正在生成第 {i + 1}/{total} 段音频...", {
                 "label": f"播客文稿 {part_display}",
                 "url": script_url,
             })
-            audio_filename = generate_audio_sync(polished, voice=options.voice, output_dir=options.audio_dir)
+            audio_filename = services.generate_audio_sync(polished, options.voice, options.audio_dir)
             _notify(on_status, "generating_audio", f"正在压缩第 {i + 1}/{total} 段音频为 96kbps mono...")
             audio_filename = normalize_audio_for_podcast(audio_filename, options.audio_dir)
             items.append(_make_item(
@@ -362,14 +482,31 @@ def generate_podcast(
                 audio_dir=options.audio_dir,
             ))
 
+        if article_sections:
+            article_script = "\n\n".join(article_sections)
+            article_script_url = save_script(title, article_script, options.scripts_dir)
+            article_word_count = len(article_script)
+            article_summary = _article_summary(article_script)
+            _notify(on_status, "processing", "已保存完整文章文稿。", {
+                "label": "完整文章文稿",
+                "url": article_script_url,
+            })
+
     if not items:
         raise RuntimeError("没有成功生成任何音频或文稿。")
+    if not article_script_url:
+        article_script_url = items[0].script_url
+        article_word_count = items[0].word_count
+        article_summary = items[0].description
 
     return PodcastGenerationResult(
         title=title,
         source_url=source_url,
         source_type=options.source_type,
         transcript_url=transcript_url,
+        article_script_url=article_script_url,
+        article_word_count=article_word_count,
+        article_summary=article_summary,
         image_url=image_url,
         items=items,
         tags=tags,

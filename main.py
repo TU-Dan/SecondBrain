@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "packages", "content-
 
 from content_to_podcast import PodcastGenerationOptions, generate_podcast
 from curl_cffi import requests as cffi_requests
-from services.extractor import extract_content, download_youtube_audio
+from services.extractor import detect_url_platform, download_youtube_audio, extract_content
 from services.llm import distill_and_translate, format_transcript, chunk_text, polish_chunk, detect_language, generate_tags, generate_title, generate_social_post, extract_insights, generate_daily_brief, CHUNK_THRESHOLD
 from services.tts import generate_audio_sync
 from services.rss import add_episode, clean_description
@@ -36,6 +36,8 @@ from services.db import (
     delete_article, update_article_title, update_insights,
     add_feed, list_feeds, delete_feed,
     list_inbox, count_inbox, update_feed_item_status, get_article,
+    add_inbox_item, count_unified_inbox, delete_inbox_item, get_inbox_item,
+    list_unified_inbox, update_inbox_item,
 )
 from services.feeds import refresh_all_feeds, refresh_feed, resolve_feed_url
 
@@ -77,7 +79,6 @@ async def lifespan(app: FastAPI):
     import asyncio
     init_db()
     threading.Thread(target=_retag_untagged, daemon=True).start()
-    asyncio.create_task(refresh_all_feeds())
     from services import agent
     agent.start()
     yield
@@ -177,7 +178,16 @@ def save_script(title: str, script: str, part_label: str = "") -> str:
     return f"/static/scripts/{filename}"
 
 
-def process_content_task(job_id: str, source: str, source_type: str, title: str, base_url: str, voice: str, use_original_audio: bool = False):
+def process_content_task(
+    job_id: str,
+    source: str,
+    source_type: str,
+    title: str,
+    base_url: str,
+    voice: str,
+    use_original_audio: bool = False,
+    summarize: bool = False,
+):
     try:
         def on_status(status: str, message: str, file: dict = None):
             update_job(job_id, status, message, file=file)
@@ -190,6 +200,7 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
                 base_url=base_url,
                 voice=voice,
                 use_original_audio=use_original_audio,
+                summarize=summarize,
             ),
             on_status=on_status,
         )
@@ -206,21 +217,23 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
                 episode_image=item.image_url,
                 audio_mime=item.audio_mime,
             )
-            article_id = add_article(
-                title=item.title,
-                source_url=result.source_url,
-                source_type=result.source_type,
-                summary=item.description,
-                article_md_path=item.script_url,
-                transcript_path=item.transcript_url,
-                audio_url=item.audio_url,
-                audio_length=item.audio_length,
-                image_url=item.image_url,
-                word_count=item.word_count,
-            )
-            if item.tags:
-                update_tags(article_id, item.tags)
-            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
+
+        primary_item = result.items[0]
+        article_id = add_article(
+            title=result.title,
+            source_url=result.source_url,
+            source_type=result.source_type,
+            summary=result.article_summary or primary_item.description,
+            article_md_path=result.article_script_url or primary_item.script_url,
+            transcript_path=result.transcript_url,
+            audio_url=primary_item.audio_url,
+            audio_length=primary_item.audio_length,
+            image_url=result.image_url or primary_item.image_url,
+            word_count=result.article_word_count or primary_item.word_count,
+        )
+        if result.tags:
+            update_tags(article_id, result.tags)
+        threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
 
         file_count = len(jobs[job_id]['files'])
         print(f"[{job_id}] Finished: {result.title}")
@@ -338,8 +351,14 @@ async def api_article(article_id: str):
 async def get_article_content(article_id: str):
     from services.db import get_article
     article = get_article(article_id)
-    if not article or not article.get("article_md_path"):
+    if not article:
         return JSONResponse({"error": "not found"}, status_code=404)
+    if not article.get("article_md_path"):
+        fallback = article.get("summary") or ""
+        if not fallback:
+            fallback = "正文还没有写入。可能是后台入库任务仍在提取内容，或原链接无法抓取正文。"
+        content = f"# {article.get('title') or '未命名文章'}\n\n{fallback}"
+        return JSONResponse({"content": content, "fallback": True})
     # article_md_path is like /static/scripts/foo.md — strip leading /
     file_path = article["article_md_path"].lstrip("/")
     try:
@@ -458,6 +477,40 @@ async def api_brain_stats():
 async def api_agent_tasks(status: str = None, limit: int = 50):
     from services import db
     return JSONResponse(db.list_agent_tasks(status=status, limit=limit))
+
+
+@app.post("/api/agent/tasks")
+async def api_create_agent_task(request: Request):
+    from services import db
+    body = await request.json()
+    task_type = (body.get("type") or "manual_agent_task").strip()
+    title = (body.get("title") or body.get("objective") or "Agent 任务").strip()
+    task_id = db.enqueue_agent_task(
+        task_type,
+        title,
+        body.get("payload") or {},
+        priority=int(body.get("priority") or 50),
+        scheduled_at=body.get("scheduled_at"),
+        objective=body.get("objective"),
+        success_criteria=body.get("success_criteria") or [],
+        review_required=bool(body.get("review_required")),
+        next_action=body.get("next_action") or "等待 Agent 调度执行。",
+        artifact_type=body.get("artifact_type"),
+        artifact_id=body.get("artifact_id"),
+    )
+    task = db.get_agent_task(task_id)
+    db.add_evolution_log(
+        "task_created",
+        f"创建 Agent 任务：{title}",
+        task_id=task_id,
+        after={
+            "objective": body.get("objective"),
+            "success_criteria": body.get("success_criteria") or [],
+        },
+        artifact_type=body.get("artifact_type"),
+        artifact_id=body.get("artifact_id"),
+    )
+    return JSONResponse(task, status_code=201)
 
 
 @app.post("/api/agent/tasks/{task_id}/run")
@@ -823,7 +876,7 @@ async def quick_save_url(request: Request):
     if not url:
         return JSONResponse({"error": "url required"}, status_code=400)
 
-    source_type = "youtube" if ("youtube.com" in url or "youtu.be" in url) else "url"
+    source_type = detect_url_platform(url)
     text, thumbnail_url = extract_content(url, source_type)
     if not text:
         return JSONResponse({"error": "无法提取内容，请检查链接"}, status_code=422)
@@ -831,12 +884,14 @@ async def quick_save_url(request: Request):
     title = generate_title(text)
     episode_image = download_thumbnail(thumbnail_url) if thumbnail_url else None
     summary = text[:200].replace("\n", " ")
+    script_url = save_script(title, text)
 
     article_id = add_article(
         title=title,
         source_url=url,
         source_type=source_type,
         summary=summary,
+        article_md_path=script_url,
         image_url=episode_image,
         word_count=len(text),
     )
@@ -882,15 +937,93 @@ async def api_refresh_feeds():
     return JSONResponse({"ok": True, "new_items": n})
 
 
+@app.post("/api/discovery/run")
+async def api_run_discovery():
+    """Manually trigger a discovery run."""
+    from services.discovery import run_daily_discovery
+    result = await run_daily_discovery()
+    return JSONResponse(result)
+
+
+@app.get("/api/discovery/debug")
+async def api_discovery_debug():
+    """Run a full discovery cycle and return step-by-step trace."""
+    from services.discovery import run_discovery_sync
+    result = await asyncio.to_thread(run_discovery_sync)
+    return JSONResponse(result)
+
+
 @app.get("/api/inbox")
-async def api_inbox(min_score: int = 0):
-    items = list_inbox(min_score)
+async def api_inbox(min_score: int = 0, intent: str = None):
+    items = list_unified_inbox(intent=intent, min_score=min_score)
     return JSONResponse({"items": items, "count": len(items)})
 
 
 @app.get("/api/inbox/count")
 async def api_inbox_count():
-    return JSONResponse({"count": count_inbox()})
+    return JSONResponse({"count": count_unified_inbox()})
+
+
+@app.post("/api/inbox/items")
+async def api_create_inbox_item(request: Request):
+    body = await request.json()
+    url = (body.get("url") or "").strip()
+    title = (body.get("title") or "").strip()
+    note = (body.get("note") or "").strip()
+    description = (body.get("description") or "").strip()
+    intent = (body.get("intent") or ("read" if url else "todo")).strip()
+    priority = (body.get("priority") or "normal").strip()
+
+    if not title and not url and not note:
+        return JSONResponse({"ok": False, "error": "title, url, or note required"}, status_code=400)
+
+    if not title:
+        title = url or note[:60] or "未命名"
+
+    item_id = add_inbox_item(
+        title=title,
+        url=url or None,
+        intent=intent,
+        description=description or None,
+        note=note or None,
+        priority=priority,
+        source=body.get("source") or "manual",
+    )
+    return JSONResponse({"ok": True, "id": item_id})
+
+
+@app.patch("/api/inbox/items/{item_id}")
+async def api_patch_inbox_item(item_id: str, request: Request):
+    body = await request.json()
+    allowed = {"intent", "title", "url", "description", "note", "status", "priority"}
+    fields = {k: body[k] for k in allowed if k in body}
+    ok = update_inbox_item(item_id, **fields)
+    return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
+@app.delete("/api/inbox/items/{item_id}")
+async def api_delete_inbox_item(item_id: str):
+    ok = delete_inbox_item(item_id)
+    return JSONResponse({"ok": ok}, status_code=200 if ok else 404)
+
+
+@app.post("/api/inbox/items/{item_id}/podcast")
+async def api_inbox_item_to_podcast(item_id: str, request: Request, background_tasks: BackgroundTasks):
+    item = get_inbox_item(item_id)
+    if not item:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    url = (item.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "这条收件箱内容没有 URL，无法生成播客"}, status_code=400)
+
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
+    source_type = detect_url_platform(url)
+    base_url = str(request.base_url).rstrip('/')
+    title = item.get("title") or ""
+    update_inbox_item(item_id, status="processing")
+    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, "zh-CN-YunxiNeural", True, False)
+    return JSONResponse({"ok": True, "job_id": job_id})
 
 
 @app.post("/api/inbox/{item_id}/save")
@@ -991,12 +1124,13 @@ async def generate_from_url(
     title: str = Form(""),
     voice: str = Form("zh-CN-YunxiNeural"),
     use_original_audio: bool = Form(False),
+    summarize: bool = Form(False),
 ):
     job_id = uuid.uuid4().hex
     jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
-    source_type = 'youtube' if 'youtube.com' in url or 'youtu.be' in url else 'url'
+    source_type = detect_url_platform(url)
     base_url = str(request.base_url).rstrip('/')
-    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, voice, use_original_audio)
+    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, voice, use_original_audio, summarize)
     return JSONResponse({"job_id": job_id})
 
 
@@ -1006,7 +1140,8 @@ async def generate_from_file(
     request: Request,
     file: UploadFile = File(...),
     title: str = Form(""),
-    voice: str = Form("zh-CN-YunxiNeural")
+    voice: str = Form("zh-CN-YunxiNeural"),
+    summarize: bool = Form(False),
 ):
     temp_dir = "temp_uploads"
     os.makedirs(temp_dir, exist_ok=True)
@@ -1018,5 +1153,5 @@ async def generate_from_file(
     jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
     source_type = 'pdf' if file.filename.lower().endswith('.pdf') else 'txt'
     base_url = str(request.base_url).rstrip('/')
-    background_tasks.add_task(process_content_task, job_id, temp_path, source_type, title, base_url, voice)
+    background_tasks.add_task(process_content_task, job_id, temp_path, source_type, title, base_url, voice, False, summarize)
     return JSONResponse({"job_id": job_id})
