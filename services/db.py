@@ -271,6 +271,8 @@ def _scan_scripts_dir():
         except Exception as e:
             print(f"[db] Failed to parse {filename}: {e}")
             continue
+        if re.search(r"（第\d+段/共\d+段）", parsed["title"] or ""):
+            continue
 
         add_article(
             title=parsed["title"] or filename,

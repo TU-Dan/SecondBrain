@@ -217,21 +217,23 @@ def process_content_task(
                 episode_image=item.image_url,
                 audio_mime=item.audio_mime,
             )
-            article_id = add_article(
-                title=item.title,
-                source_url=result.source_url,
-                source_type=result.source_type,
-                summary=item.description,
-                article_md_path=item.script_url,
-                transcript_path=item.transcript_url,
-                audio_url=item.audio_url,
-                audio_length=item.audio_length,
-                image_url=item.image_url,
-                word_count=item.word_count,
-            )
-            if item.tags:
-                update_tags(article_id, item.tags)
-            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
+
+        primary_item = result.items[0]
+        article_id = add_article(
+            title=result.title,
+            source_url=result.source_url,
+            source_type=result.source_type,
+            summary=result.article_summary or primary_item.description,
+            article_md_path=result.article_script_url or primary_item.script_url,
+            transcript_path=result.transcript_url,
+            audio_url=primary_item.audio_url,
+            audio_length=primary_item.audio_length,
+            image_url=result.image_url or primary_item.image_url,
+            word_count=result.article_word_count or primary_item.word_count,
+        )
+        if result.tags:
+            update_tags(article_id, result.tags)
+        threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
 
         file_count = len(jobs[job_id]['files'])
         print(f"[{job_id}] Finished: {result.title}")

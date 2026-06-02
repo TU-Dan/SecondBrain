@@ -3,7 +3,8 @@
 独立的内容转播客工具包。它负责把网页、YouTube、抖音、B站、微信公众号、PDF、TXT 转成：
 
 - 原始逐字稿 Markdown
-- 中文播客文稿 Markdown
+- 中文文章文稿 Markdown
+- 可选的分段播客文稿 Markdown
 - MP3 音频
 - 标题、标签、封面图等结构化结果
 
@@ -16,8 +17,10 @@ Second Brain 现在通过 `generate_podcast()` 调用这个包。后续优化这
 实现上：
 
 - 短内容走 `format_transcript()`：整理/翻译为中文 Markdown，不做蒸馏摘要。
-- 长内容超过 `CHUNK_THRESHOLD` 后分段走 `polish_chunk()`：逐段忠实整理，并生成多段音频。
+- 长内容超过 `CHUNK_THRESHOLD` 后分段走 `polish_chunk()`：逐段忠实整理并生成多段音频；同时合并保存一篇完整文章文稿，供知识库阅读和检索使用。
 - `distill_and_translate()` 是摘要模式，不是默认播客生成路径。
+
+也就是说，长内容在 RSS/播客里可以是多段 episode，但在 Second Brain 的文章库里应该只是一篇完整文章。
 
 在 Web 表单中勾选「摘要」，或在 CLI 中使用 `--summarize`，才会走摘要模式。
 
@@ -87,6 +90,8 @@ result = generate_podcast(
 
 for item in result.items:
     print(item.script_url, item.audio_url)
+
+print(result.article_script_url)  # 知识库使用的完整文章文稿
 ```
 
 ## 自定义底层服务

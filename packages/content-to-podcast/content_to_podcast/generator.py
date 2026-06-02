@@ -102,6 +102,9 @@ class PodcastGenerationResult:
     source_url: str | None
     source_type: SourceType
     transcript_url: str
+    article_script_url: str
+    article_word_count: int
+    article_summary: str
     image_url: str | None
     items: list[GeneratedPodcastItem]
     tags: list[str] = field(default_factory=list)
@@ -289,6 +292,10 @@ def _make_item(
     )
 
 
+def _article_summary(script: str) -> str:
+    return clean_description(script)[:200]
+
+
 def _extract_failure_message(source_type: SourceType) -> str:
     if source_type == "douyin":
         return (
@@ -334,6 +341,9 @@ def generate_podcast(
 
     items: list[GeneratedPodcastItem] = []
     tags: list[str] = []
+    article_script_url = ""
+    article_word_count = 0
+    article_summary = ""
 
     if options.use_original_audio and options.source_type in ("youtube", "douyin", "bilibili"):
         if options.summarize:
@@ -348,6 +358,9 @@ def generate_podcast(
             raise RuntimeError("LLM 处理失败，请检查 API Key。")
         script, tags = result
         script_url = save_script(title, script, options.scripts_dir)
+        article_script_url = script_url
+        article_word_count = len(script)
+        article_summary = _article_summary(script)
         _notify(on_status, "generating_audio", "正在下载原始音频...", {
             "label": script_label,
             "url": script_url,
@@ -376,6 +389,9 @@ def generate_podcast(
             raise RuntimeError("LLM 处理失败，请检查 API Key。")
         script, tags = result
         script_url = save_script(title, script, options.scripts_dir)
+        article_script_url = script_url
+        article_word_count = len(script)
+        article_summary = _article_summary(script)
         _notify(on_status, "generating_audio", "正在生成摘要版音频...", {
             "label": "播客文稿（摘要）",
             "url": script_url,
@@ -402,6 +418,9 @@ def generate_podcast(
             raise RuntimeError("LLM 处理失败，请检查 API Key。")
         script, tags = result
         script_url = save_script(title, script, options.scripts_dir)
+        article_script_url = script_url
+        article_word_count = len(script)
+        article_summary = _article_summary(script)
         _notify(on_status, "generating_audio", "正在生成音频...", {
             "label": "播客文稿",
             "url": script_url,
@@ -426,6 +445,7 @@ def generate_podcast(
         total = len(chunks)
         _notify(on_status, "processing", f"内容较长，分为 {total} 段处理...")
         tags = services.generate_tags(title, chunks[0]) if chunks else []
+        article_sections: list[str] = []
 
         for i, chunk in enumerate(chunks):
             part_label = f"第{i + 1}段_共{total}段"
@@ -436,8 +456,9 @@ def generate_podcast(
             if not polished:
                 print(f"Skipping part {i + 1} due to LLM error.")
                 continue
+            article_sections.append(f"## 第 {i + 1}/{total} 段\n\n{polished}")
 
-            script_url = save_script(title, polished, options.scripts_dir, part_label)
+            script_url = save_script(title, polished, os.path.join(options.scripts_dir, "episodes"), part_label)
             _notify(on_status, "generating_audio", f"正在生成第 {i + 1}/{total} 段音频...", {
                 "label": f"播客文稿 {part_display}",
                 "url": script_url,
@@ -458,14 +479,31 @@ def generate_podcast(
                 audio_dir=options.audio_dir,
             ))
 
+        if article_sections:
+            article_script = "\n\n".join(article_sections)
+            article_script_url = save_script(title, article_script, options.scripts_dir)
+            article_word_count = len(article_script)
+            article_summary = _article_summary(article_script)
+            _notify(on_status, "processing", "已保存完整文章文稿。", {
+                "label": "完整文章文稿",
+                "url": article_script_url,
+            })
+
     if not items:
         raise RuntimeError("没有成功生成任何音频或文稿。")
+    if not article_script_url:
+        article_script_url = items[0].script_url
+        article_word_count = items[0].word_count
+        article_summary = items[0].description
 
     return PodcastGenerationResult(
         title=title,
         source_url=source_url,
         source_type=options.source_type,
         transcript_url=transcript_url,
+        article_script_url=article_script_url,
+        article_word_count=article_word_count,
+        article_summary=article_summary,
         image_url=image_url,
         items=items,
         tags=tags,

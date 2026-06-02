@@ -66,14 +66,15 @@ def make_services(source_text: str, calls: list[str]) -> PodcastGenerationServic
     )
 
 
-def run_case(source_text: str, summarize: bool = False) -> list[str]:
+def run_case(source_text: str, summarize: bool = False):
     calls: list[str] = []
+    artifacts = {}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         original_normalize = generator.normalize_audio_for_podcast
         generator.normalize_audio_for_podcast = lambda audio_filename, audio_dir: audio_filename
         try:
-            generate_podcast(
+            result = generate_podcast(
                 PodcastGenerationOptions(
                     source="fixture",
                     source_type="txt",
@@ -86,22 +87,30 @@ def run_case(source_text: str, summarize: bool = False) -> list[str]:
                     summarize=summarize,
                 )
             )
+            article_path = Path(result.article_script_url)
+            artifacts["article_text"] = article_path.read_text(encoding="utf-8")
         finally:
             generator.normalize_audio_for_podcast = original_normalize
-    return calls
+        return calls, result, artifacts
 
 
 def main() -> int:
-    short_calls = run_case("短文本。" * 100)
+    short_calls, short_result, _ = run_case("短文本。" * 100)
     assert "format_transcript" in short_calls, short_calls
     assert "distill_and_translate" not in short_calls, short_calls
+    assert len(short_result.items) == 1, short_result.items
+    assert short_result.article_script_url == short_result.items[0].script_url
 
-    long_calls = run_case("长文本。" * 5000)
+    long_calls, long_result, long_artifacts = run_case("长文本。" * 5000)
     assert "chunk_text" in long_calls, long_calls
     assert "polish_chunk_1" in long_calls and "polish_chunk_2" in long_calls, long_calls
     assert "distill_and_translate" not in long_calls, long_calls
+    assert len(long_result.items) == 2, long_result.items
+    assert long_result.article_script_url not in {item.script_url for item in long_result.items}
+    article_text = long_artifacts["article_text"]
+    assert "## 第 1/2 段" in article_text and "## 第 2/2 段" in article_text
 
-    summary_calls = run_case("摘要文本。" * 100, summarize=True)
+    summary_calls, _, _ = run_case("摘要文本。" * 100, summarize=True)
     assert "distill_and_translate" in summary_calls, summary_calls
 
     print("podcast fidelity path ok")
