@@ -939,6 +939,31 @@
             color: var(--text-muted);
         }
 
+        .inbox-filter-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .inbox-filter-tab {
+            padding: 5px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-muted);
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .inbox-filter-tab:hover,
+        .inbox-filter-tab.active {
+            color: var(--accent);
+            border-color: rgba(74,103,65,0.35);
+            background: var(--accent-glow);
+        }
+
         .inbox-secondary-actions {
             display: flex;
             align-items: center;
@@ -1051,12 +1076,23 @@
             .evolution-layout { grid-template-columns: 1fr; }
         }
 
+        #inbox-content {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(320px, 1fr));
+            gap: 10px;
+            align-items: start;
+        }
+
+        #inbox-content .loading,
+        #inbox-content .inbox-empty {
+            grid-column: 1 / -1;
+        }
+
         .inbox-item {
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius);
             padding: 14px;
-            margin-bottom: 10px;
             display: flex;
             gap: 12px;
             align-items: flex-start;
@@ -1195,6 +1231,7 @@
         .inbox-more-panel.open { display: flex; }
 
         @media (max-width: 760px) {
+            #inbox-content { grid-template-columns: 1fr; }
             .inbox-item { flex-direction: column; }
             .inbox-source-dot { display: none; }
             .inbox-item-actions { width: 100%; justify-content: flex-start; }
@@ -1258,11 +1295,6 @@
             洞察
             <span class="nav-badge" id="insights-count"></span>
         </button>
-        <button class="nav-item" id="nav-evolution" onclick="switchView('evolution')" hidden>
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><path d="M14 7h5v5"/></svg>
-            大脑演化
-        </button>
-
         <select class="tag-select" id="tag-select" onchange="onTagSelect(this.value)">
             <option value="">全部标签</option>
         </select>
@@ -1340,8 +1372,15 @@
                 <div id="capture-status" class="capture-status"></div>
             </div>
             <div class="inbox-toolbar">
-                <span class="inbox-count-label" id="inbox-count-label">所有还没决定命运的东西</span>
+                <div class="inbox-filter-tabs" id="inbox-filter-tabs">
+                    <button class="inbox-filter-tab active" data-filter="all" onclick="setInboxFilter('all')">全部</button>
+                    <button class="inbox-filter-tab" data-filter="read" onclick="setInboxFilter('read')">待读</button>
+                    <button class="inbox-filter-tab" data-filter="todo" onclick="setInboxFilter('todo')">待办</button>
+                    <button class="inbox-filter-tab" data-filter="note" onclick="setInboxFilter('note')">笔记</button>
+                    <button class="inbox-filter-tab" data-filter="podcast" onclick="setInboxFilter('podcast')">播客</button>
+                </div>
                 <div class="inbox-secondary-actions">
+                    <span class="inbox-count-label" id="inbox-count-label">所有还没决定命运的东西</span>
                     <button class="inbox-secondary-btn" onclick="refreshFeeds()">刷新 RSS</button>
                     <button class="inbox-secondary-btn" onclick="openFeedModal()">管理订阅</button>
                 </div>
@@ -1744,7 +1783,7 @@
         document.getElementById('insights-view').classList.toggle('active', view === 'insights');
         document.getElementById('nav-inbox').classList.toggle('active', view === 'inbox');
         document.getElementById('nav-notes').classList.toggle('active', view === 'notes');
-        document.getElementById('nav-evolution').classList.toggle('active', view === 'evolution');
+        document.getElementById('nav-evolution')?.classList.toggle('active', view === 'evolution');
         document.getElementById('nav-insights').classList.toggle('active', view === 'insights');
         if (view === 'inbox') { clearTags(); loadInbox(); }
         if (view === 'notes') { clearTags(); loadNotes(); }
@@ -1976,9 +2015,17 @@
     const INTENT_LABELS = {
         podcast: '播客',
         read: '待读',
-        todo: 'Todo',
-        note: '备注',
+        todo: '待办',
+        note: '笔记',
         rss: 'RSS'
+    };
+
+    const INBOX_FILTER_LABELS = {
+        all: '全部',
+        read: '待读',
+        todo: '待办',
+        note: '笔记',
+        podcast: '播客'
     };
 
     function isUrlLike(value) {
@@ -2070,10 +2117,12 @@
                 <span>没有待处理内容</span>
                 <button class="btn-brief" onclick="openFeedModal()" style="margin-top:4px">管理订阅</button>
             </div>`;
+            const countLabel = document.getElementById('inbox-count-label');
+            if (countLabel) countLabel.textContent = `${INBOX_FILTER_LABELS[inboxFilter] || '当前'}为空`;
             return;
         }
         const countLabel = document.getElementById('inbox-count-label');
-        if (countLabel) countLabel.textContent = `${items.length} 条待处理`;
+        if (countLabel) countLabel.textContent = `${INBOX_FILTER_LABELS[inboxFilter] || '当前'} · ${items.length} 条`;
         el.innerHTML = items.map(item => `
             <div class="inbox-item" id="iitem-${escapeHtml(item.id)}">
                 <div class="inbox-source-dot ${escapeHtml(item.kind === 'rss' ? 'rss' : (item.intent || ''))}"></div>
@@ -2099,17 +2148,59 @@
             </div>`).join('');
     }
 
+    function setInboxFilter(filter) {
+        inboxFilter = filter || 'all';
+        document.querySelectorAll('.inbox-filter-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.filter === inboxFilter);
+        });
+        loadInbox();
+    }
+
     function toggleInboxMore(id) {
         document.getElementById(`imore-${id}`)?.classList.toggle('open');
     }
 
     async function readInboxItem(btn, id) {
+        const articleId = btn.dataset.articleId;
+        if (articleId) {
+            window.location.href = `/article/${articleId}`;
+            return;
+        }
         const url = btn.dataset.url;
         if (url) {
             window.open(url, '_blank');
             return;
         }
         await patchManualInboxItem(id, 'done');
+    }
+
+    function markInboxItemSaved(id, articleId, title) {
+        const card = document.getElementById(`iitem-${id}`);
+        if (!card) return;
+        const reason = card.querySelector('.inbox-reason');
+        const readBtn = card.querySelector('.btn-inbox-read');
+        const saveBtn = card.querySelector('.btn-inbox-save');
+        const dismissBtn = card.querySelector('.btn-inbox-dismiss');
+        const moreBtn = card.querySelector('.btn-inbox-more');
+        const morePanel = card.querySelector('.inbox-more-panel');
+
+        if (reason) reason.textContent = title ? `已入库：${title}` : '已入库';
+        if (readBtn) {
+            readBtn.dataset.articleId = articleId || '';
+            readBtn.dataset.url = '';
+            readBtn.textContent = '阅读文章';
+            readBtn.style.borderColor = 'rgba(138,166,106,0.5)';
+            readBtn.style.color = 'var(--accent)';
+        }
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.textContent = '已入库';
+            saveBtn.style.background = 'var(--success)';
+        }
+        if (dismissBtn) dismissBtn.remove();
+        if (moreBtn) moreBtn.remove();
+        if (morePanel) morePanel.remove();
+        loadInboxCount();
     }
 
     async function loadInbox() {
@@ -2129,16 +2220,13 @@
         btn.disabled = true;
         btn.textContent = '处理中...';
         try {
-            await fetch(`/api/inbox/${id}/save`, { method: 'POST' });
-            btn.textContent = '已存入';
-            btn.style.background = 'var(--success)';
-            setTimeout(() => {
-                document.getElementById(`iitem-${id}`)?.remove();
-                loadInboxCount();
-            }, 1000);
+            const res = await fetch(`/api/inbox/${id}/save`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data.error || 'save failed');
+            markInboxItemSaved(id, data.article_id, data.title);
         } catch(e) {
             btn.disabled = false;
-            btn.textContent = '存入';
+            btn.textContent = '入库';
         }
     }
 
@@ -2158,8 +2246,13 @@
                 body: JSON.stringify(body)
             });
             if (!res.ok) throw new Error('save failed');
-            await patchManualInboxItem(id, 'done');
-            btn.textContent = '已入库';
+            const data = await res.json();
+            await fetch(`/api/inbox/items/${id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'done' })
+            });
+            markInboxItemSaved(id, data.article_id, data.title);
         } catch(e) {
             btn.disabled = false;
             btn.textContent = '入库';

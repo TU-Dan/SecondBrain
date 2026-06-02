@@ -1036,48 +1036,48 @@ async def api_inbox_save(item_id: str, background_tasks: BackgroundTasks):
     item = dict(row)
     update_feed_item_status(item_id, "saved")
 
-    # Kick off full extraction in background
     from services.extractor import extract_from_url
     from services.llm import detect_language, translate_full_article, generate_tags as gen_tags
 
-    async def _save():
-        try:
-            text, image_url_extracted = extract_from_url(item["url"])
-            title = item["title"]
-            tags = []
-            if not text:
-                script_url = None
-                summary = item.get("description", "")[:200]
-            elif detect_language(text) == 'en':
-                zh, tags = translate_full_article(text)
-                script_content = f"{zh}\n\n---\n\n{text}" if zh else text
-                script_url = save_script(title, script_content)
-                # Summary from first non-empty paragraph of translation
-                first_para = next((p.strip() for p in zh.split("\n") if len(p.strip()) > 20), "")
-                summary = first_para[:200]
-            else:
-                tags = gen_tags(title, text[:3000])
-                script_url = save_script(title, text)
-                first_para = next((p.strip() for p in text.split("\n") if len(p.strip()) > 20), "")
-                summary = first_para[:200]
-            article_id = add_article(
-                title=title,
-                source_url=item["url"],
-                source_type="url",
-                summary=summary,
-                image_url=image_url_extracted,
-                word_count=len(text),
-                article_md_path=script_url,
-            )
-            if tags:
-                update_tags(article_id, tags)
-            threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
-        except Exception as e:
-            print(f"[inbox] save error for {item['url']}: {e}")
+    def _save():
+        text, image_url_extracted = extract_from_url(item["url"])
+        title = item["title"]
+        tags = []
+        if not text:
+            script_url = None
+            summary = item.get("description", "")[:200]
+        elif detect_language(text) == 'en':
+            zh, tags = translate_full_article(text)
+            script_content = f"{zh}\n\n---\n\n{text}" if zh else text
+            script_url = save_script(title, script_content)
+            first_para = next((p.strip() for p in zh.split("\n") if len(p.strip()) > 20), "")
+            summary = first_para[:200]
+        else:
+            tags = gen_tags(title, text[:3000])
+            script_url = save_script(title, text)
+            first_para = next((p.strip() for p in text.split("\n") if len(p.strip()) > 20), "")
+            summary = first_para[:200]
+        article_id = add_article(
+            title=title,
+            source_url=item["url"],
+            source_type="url",
+            summary=summary,
+            image_url=image_url_extracted,
+            word_count=len(text or ""),
+            article_md_path=script_url,
+        )
+        if tags:
+            update_tags(article_id, tags)
+        threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
+        return article_id
 
-    import asyncio
-    asyncio.create_task(_save())
-    return JSONResponse({"ok": True})
+    try:
+        article_id = await asyncio.to_thread(_save)
+    except Exception as e:
+        update_feed_item_status(item_id, "pending")
+        print(f"[inbox] save error for {item['url']}: {e}")
+        return JSONResponse({"ok": False, "error": "入库失败，请稍后重试"}, status_code=500)
+    return JSONResponse({"ok": True, "article_id": article_id, "title": item["title"]})
 
 
 @app.post("/api/inbox/{item_id}/dismiss")
