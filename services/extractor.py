@@ -6,6 +6,7 @@ import tempfile
 import uuid
 import html as html_lib
 import urllib.request
+from urllib.parse import parse_qs, urlparse
 import yt_dlp
 import trafilatura
 from PyPDF2 import PdfReader
@@ -20,6 +21,23 @@ FETCH_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
+
+
+class ExtractionError(RuntimeError):
+    """Raised when a source cannot be extracted for a known actionable reason."""
+
+
+def _format_yt_dlp_error(error: Exception, platform_label: str) -> str:
+    message = str(error)
+    if "Sign in to confirm" in message or "not a bot" in message:
+        return (
+            f"{platform_label} 触发了反机器人验证，yt-dlp 无法匿名提取字幕或音频。"
+            "请先在本机浏览器确认该视频可访问；如仍失败，可在启动服务前设置 "
+            "SECOND_BRAIN_USE_BROWSER_COOKIES=1 允许 yt-dlp 使用浏览器登录态。"
+        )
+    if "Video unavailable" in message:
+        return f"{platform_label} 视频不可用。请确认链接是公开可访问的单个视频，而不是私密、删除或地区限制视频。"
+    return f"{platform_label} 内容提取失败：{message}"
 
 
 def _fetch_html(url: str) -> str | None:
@@ -115,6 +133,35 @@ def detect_url_platform(url: str) -> str:
     return "url"
 
 
+def normalize_video_url(url: str) -> str:
+    """Return a canonical single-video URL for video platforms.
+
+    User-pasted YouTube links often include playlist state like list/index. The
+    generator works on one source item at a time, so keep the video id and drop
+    playlist/navigation query parameters before handing the URL to yt-dlp.
+    """
+    parsed = urlparse(url.strip())
+    host = parsed.netloc.lower()
+    path = parsed.path
+
+    if "youtu.be" in host:
+        video_id = path.strip("/").split("/")[0]
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+
+    if "youtube.com" in host:
+        query = parse_qs(parsed.query)
+        video_id = (query.get("v") or [""])[0]
+        if not video_id and path.startswith("/shorts/"):
+            video_id = path.split("/")[2] if len(path.split("/")) > 2 else ""
+        if not video_id and path.startswith("/embed/"):
+            video_id = path.split("/")[2] if len(path.split("/")) > 2 else ""
+        if video_id:
+            return f"https://www.youtube.com/watch?v={video_id}"
+
+    return url.strip()
+
+
 def extract_from_url(url: str) -> tuple[str, str | None]:
     """Extract text and og:image thumbnail from a web page."""
     html = _fetch_html(url)
@@ -187,17 +234,22 @@ def extract_from_wechat(url: str) -> tuple[str, str | None]:
     return "\n\n".join(parts).strip(), thumbnail
 
 
-def _ydl_base_opts(tmpdir: str) -> dict:
+def _ydl_base_opts(
+    tmpdir: str,
+    subtitle_langs: list[str] | None = None,
+    write_subtitles: bool = True,
+) -> dict:
     opts = {
         'skip_download': True,
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['zh-Hans', 'zh-Hant', 'zh', 'en'],
+        'writesubtitles': write_subtitles,
+        'writeautomaticsub': write_subtitles,
+        'subtitleslangs': subtitle_langs or ['zh-Hans', 'zh-Hant', 'zh', 'en'],
         'subtitlesformat': 'vtt/srt/best',
         'outtmpl': os.path.join(tmpdir, '%(id)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
-        'ignoreerrors': True,
+        'noprogress': True,
+        'ignoreerrors': False,
         'noplaylist': True,
         'extractor_args': {
             'youtube': {
@@ -205,13 +257,28 @@ def _ydl_base_opts(tmpdir: str) -> dict:
             }
         },
     }
-    # Use Chrome cookies if available — bypasses bot detection
-    try:
-        import browser_cookie3  # noqa: F401
+    if os.getenv("SECOND_BRAIN_USE_BROWSER_COOKIES") == "1":
         opts['cookiesfrombrowser'] = ('chrome',)
-    except Exception:
-        pass
     return opts
+
+
+def _preferred_caption_languages(info: dict) -> list[str]:
+    available = set((info.get("subtitles") or {}).keys())
+    available.update((info.get("automatic_captions") or {}).keys())
+    if not available:
+        return []
+
+    candidates: list[str] = []
+    preferences = ["en", "en-US", "en-GB", "zh-Hans", "zh-Hant", "zh"]
+    for preferred in preferences:
+        for lang in sorted(available):
+            if lang == preferred or lang.startswith(f"{preferred}-"):
+                if lang not in candidates:
+                    candidates.append(lang)
+    for lang in sorted(available):
+        if lang not in candidates and (lang.startswith("en") or lang.startswith("zh")):
+            candidates.append(lang)
+    return candidates
 
 
 def _parse_vtt(path: str) -> str:
@@ -222,6 +289,8 @@ def _parse_vtt(path: str) -> str:
         for line in f:
             line = line.strip()
             if not line or '-->' in line or line.startswith('WEBVTT') or line.isdigit():
+                continue
+            if line.startswith("Kind:") or line.startswith("Language:"):
                 continue
             # Strip inline VTT tags like <00:00:01.000><c>text</c>
             line = re.sub(r'<[^>]+>', '', line)
@@ -289,41 +358,62 @@ def extract_from_video_platform(url: str, platform_label: str) -> tuple[str, str
             return text, thumbnail
 
         except Exception as e:
-            print(f"Error extracting from {platform_label}: {e}")
-            return "", None
+            message = _format_yt_dlp_error(e, platform_label)
+            print(f"Error extracting from {platform_label}: {message}")
+            raise ExtractionError(message) from e
 
 
 def extract_from_youtube(url: str) -> tuple[str, str | None]:
     """Extract subtitles (or description) and thumbnail from a YouTube video."""
+    url = normalize_video_url(url)
     with tempfile.TemporaryDirectory() as tmpdir:
-        opts = _ydl_base_opts(tmpdir)
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-
-            if not info:
-                return "", None
-
-            title = info.get('title', '')
-            description = info.get('description', '')
-            thumbnail = info.get('thumbnail')
-
-            sub_text = ""
-            for fname in os.listdir(tmpdir):
-                if fname.endswith(('.vtt', '.srt')):
-                    try:
-                        sub_text = _parse_subtitle_file(os.path.join(tmpdir, fname))
-                        if sub_text:
-                            break
-                    except Exception as e:
-                        print(f"Warning: VTT parse error ({e})")
-
-            text = f"{title}\n\n{sub_text}" if sub_text else f"{title}\n\n{description}"
-            return text.strip(), thumbnail
+            metadata_opts = _ydl_base_opts(tmpdir, write_subtitles=False)
+            with yt_dlp.YoutubeDL(metadata_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
         except Exception as e:
-            print(f"Error extracting from YouTube: {e}")
+            message = _format_yt_dlp_error(e, "YouTube")
+            print(f"Error extracting from YouTube: {message}")
+            raise ExtractionError(message) from e
+
+        if not info:
             return "", None
+
+        thumbnail = info.get('thumbnail')
+        errors: list[str] = []
+        for lang in _preferred_caption_languages(info):
+            with tempfile.TemporaryDirectory() as subdir:
+                try:
+                    opts = _ydl_base_opts(subdir, subtitle_langs=[lang], write_subtitles=True)
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        subtitle_info = ydl.extract_info(url, download=True) or info
+
+                    sub_text = ""
+                    for fname in os.listdir(subdir):
+                        if fname.endswith(('.vtt', '.srt')):
+                            try:
+                                sub_text = _parse_subtitle_file(os.path.join(subdir, fname))
+                                if sub_text:
+                                    break
+                            except Exception as e:
+                                print(f"Warning: VTT parse error ({e})")
+
+                    if sub_text:
+                        return _build_video_text(subtitle_info, sub_text, "YouTube"), thumbnail
+                except Exception as e:
+                    errors.append(_format_yt_dlp_error(e, f"YouTube 字幕 {lang}"))
+                    continue
+
+        text = _build_video_text(info, "", "YouTube")
+        if text.strip():
+            if errors:
+                print("Warning: YouTube subtitles unavailable; using metadata fallback. " + " | ".join(errors[:2]))
+            return text.strip(), thumbnail
+
+        if errors:
+            raise ExtractionError(errors[0])
+        return "", thumbnail
 
 
 def extract_from_pdf(file_path: str) -> tuple[str, None]:
@@ -353,6 +443,7 @@ def extract_from_txt(file_path: str) -> tuple[str, None]:
 def download_youtube_audio(url: str, out_dir: str = "static/audio") -> str | None:
     """Download audio from a yt-dlp supported video URL.
     Returns filename or None."""
+    url = normalize_video_url(url)
     os.makedirs(out_dir, exist_ok=True)
     out_name = uuid.uuid4().hex
 
@@ -375,7 +466,7 @@ def download_youtube_audio(url: str, out_dir: str = "static/audio") -> str | Non
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
         except Exception as e:
-            print(f"Audio download failed: {e}")
+            print(f"Audio download failed: {_format_yt_dlp_error(e, 'YouTube')}")
             return None
 
         mp3_path = os.path.join(tmpdir, dest_name)

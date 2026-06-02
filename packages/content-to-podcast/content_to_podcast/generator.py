@@ -317,7 +317,10 @@ def generate_podcast(
     source_url = options.source if options.source_type in ("url", "youtube", "douyin", "bilibili", "wechat") else None
 
     _notify(on_status, "extracting", "正在提取内容...")
-    text, thumbnail_url = services.extract_content(options.source, options.source_type)
+    try:
+        text, thumbnail_url = services.extract_content(options.source, options.source_type)
+    except Exception as exc:
+        raise ValueError(str(exc) or _extract_failure_message(options.source_type)) from exc
     if not text:
         raise ValueError(_extract_failure_message(options.source_type))
 
