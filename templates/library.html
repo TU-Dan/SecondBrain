@@ -649,123 +649,6 @@
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* Daily brief */
-        .brief-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-left: 3px solid var(--accent);
-            border-radius: var(--radius);
-            padding: 18px 22px;
-            margin-bottom: 22px;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .brief-card {
-            backdrop-filter: blur(16px) saturate(120%);
-            -webkit-backdrop-filter: blur(16px) saturate(120%);
-        }
-
-        .brief-card::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: linear-gradient(135deg, rgba(74,103,65,0.06) 0%, transparent 60%);
-            pointer-events: none;
-        }
-
-        .brief-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 10px;
-            position: relative;
-        }
-
-        .brief-label {
-            font-size: 10.5px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--accent);
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .brief-label svg { width: 11px; height: 11px; }
-
-        .brief-date {
-            font-size: 11.5px;
-            color: var(--text-muted);
-        }
-
-        .brief-body {
-            font-size: 13.5px;
-            line-height: 1.9;
-            color: var(--text);
-            opacity: 0.85;
-            margin-bottom: 12px;
-            position: relative;
-        }
-
-        .brief-sources {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-            align-items: center;
-            position: relative;
-        }
-
-        .brief-source-label {
-            font-size: 11px;
-            color: var(--text-muted);
-        }
-
-        .brief-source-chip {
-            font-size: 11px;
-            padding: 2px 8px;
-            border-radius: 20px;
-            background: var(--surface-2);
-            border: 1px solid var(--border);
-            color: var(--text-muted);
-            text-decoration: none;
-            transition: all 0.15s;
-        }
-        .brief-source-chip:hover { border-color: var(--accent); color: var(--accent); }
-
-        .brief-collapsible {
-            overflow: hidden;
-            transition: max-height 0.3s ease, opacity 0.3s ease;
-            max-height: 600px;
-            opacity: 1;
-        }
-        .brief-collapsible.collapsed {
-            max-height: 0;
-            opacity: 0;
-        }
-
-        .btn-collapse {
-            background: none;
-            border: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            padding: 2px 4px;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            transition: color 0.15s;
-        }
-        .btn-collapse:hover { color: var(--text); }
-        .btn-collapse svg { width: 13px; height: 13px; transition: transform 0.25s; }
-        .btn-collapse.collapsed svg { transform: rotate(-90deg); }
-
-        .brief-actions {
-            display: flex;
-            gap: 7px;
-            margin-top: 12px;
-            position: relative;
-        }
-
         .btn-brief {
             display: inline-flex;
             align-items: center;
@@ -784,24 +667,6 @@
         .btn-brief:hover { background: rgba(74,103,65,0.22); }
         .btn-brief:disabled { opacity: 0.45; cursor: not-allowed; }
         .btn-brief svg { width: 11px; height: 11px; }
-
-        .brief-skeleton {
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-        }
-        .brief-skeleton-line {
-            height: 13px;
-            border-radius: 4px;
-            background: linear-gradient(90deg, var(--surface-2) 25%, rgba(255,255,255,0.12) 50%, var(--surface-2) 75%);
-            background-size: 200% 100%;
-            animation: shimmer 1.4s infinite;
-        }
-
-        [data-theme="dark"] .brief-skeleton-line {
-            background: linear-gradient(90deg, var(--surface-2) 25%, rgba(255,255,255,0.04) 50%, var(--surface-2) 75%);
-            background-size: 200% 100%;
-        }
 
         @keyframes shimmer { to { background-position: -200% 0; } }
 
@@ -1393,7 +1258,7 @@
             洞察
             <span class="nav-badge" id="insights-count"></span>
         </button>
-        <button class="nav-item" id="nav-evolution" onclick="switchView('evolution')">
+        <button class="nav-item" id="nav-evolution" onclick="switchView('evolution')" hidden>
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-7"/><path d="M14 7h5v5"/></svg>
             大脑演化
         </button>
@@ -1420,36 +1285,6 @@
 
     <!-- Main -->
     <main class="main">
-        <!-- Daily brief -->
-        <div class="brief-card" id="brief-card">
-            <div class="brief-header">
-                <div class="brief-label">
-                    <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 6v6l4 2"/></svg>
-                    今日简报
-                </div>
-                <div style="display:flex;align-items:center;gap:8px">
-                    <span class="brief-date" id="brief-date"></span>
-                    <button class="btn-collapse" id="brief-collapse-btn" onclick="toggleBrief()" title="折叠">
-                        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="18 15 12 9 6 15"/></svg>
-                    </button>
-                </div>
-            </div>
-            <div class="brief-collapsible" id="brief-collapsible">
-                <div id="brief-body" class="brief-skeleton" style="margin-top:10px">
-                    <div class="brief-skeleton-line" style="width:92%"></div>
-                    <div class="brief-skeleton-line" style="width:85%"></div>
-                    <div class="brief-skeleton-line" style="width:88%"></div>
-                    <div class="brief-skeleton-line" style="width:60%"></div>
-                </div>
-                <div class="brief-actions">
-                    <button class="btn-brief" id="brief-refresh" onclick="loadBrief(true)" disabled>
-                        <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                        换一批
-                    </button>
-                </div>
-            </div>
-        </div>
-
         <div class="topbar">
             <div class="search-wrap">
                 <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -1786,85 +1621,8 @@
         searchTimer = setTimeout(load, 300);
     }
 
-    // Daily brief
-    const BRIEF_KEY = () => `brief_${new Date().toISOString().slice(0, 10)}`;
-    const BRIEF_COLLAPSED_KEY = 'brief_collapsed';
-
-    function renderBriefData(data) {
-        const body = document.getElementById('brief-body');
-        body.className = '';
-        const today = new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' });
-        document.getElementById('brief-date').textContent = today;
-        const chips = data.articles.map(a =>
-            `<a class="brief-source-chip" href="/article/${a.id}">${a.title.slice(0, 18)}${a.title.length > 18 ? '…' : ''}</a>`
-        ).join('');
-        body.innerHTML = `
-            <div class="brief-body">${data.brief.replace(/\n/g, '<br>')}</div>
-            <div class="brief-sources">
-                <span class="brief-source-label">来源：</span>${chips}
-            </div>`;
-    }
-
-    async function loadBrief(force = false) {
-        const body = document.getElementById('brief-body');
-        const btn = document.getElementById('brief-refresh');
-
-        if (!force) {
-            const cached = localStorage.getItem(BRIEF_KEY());
-            if (cached) {
-                try {
-                    renderBriefData(JSON.parse(cached));
-                    btn.disabled = false;
-                    return;
-                } catch(e) {}
-            }
-        }
-
-        btn.disabled = true;
-        body.className = 'brief-skeleton';
-        body.style.marginTop = '10px';
-        body.innerHTML = `
-            <div class="brief-skeleton-line" style="width:92%"></div>
-            <div class="brief-skeleton-line" style="width:85%"></div>
-            <div class="brief-skeleton-line" style="width:88%"></div>
-            <div class="brief-skeleton-line" style="width:60%"></div>`;
-        try {
-            const res = await fetch('/api/brief');
-            const data = await res.json();
-            if (data.brief) {
-                localStorage.setItem(BRIEF_KEY(), JSON.stringify(data));
-                renderBriefData(data);
-            } else {
-                body.className = '';
-                body.innerHTML = `<div style="font-size:13px;color:var(--text-muted)">${data.error || '生成失败'}</div>`;
-            }
-        } catch (e) {
-            body.className = '';
-            body.innerHTML = `<div style="font-size:13px;color:var(--error)">请求失败：${e.message}</div>`;
-        } finally {
-            btn.disabled = false;
-        }
-    }
-
-    function toggleBrief() {
-        const col = document.getElementById('brief-collapsible');
-        const btn = document.getElementById('brief-collapse-btn');
-        const isCollapsed = col.classList.toggle('collapsed');
-        btn.classList.toggle('collapsed', isCollapsed);
-        localStorage.setItem(BRIEF_COLLAPSED_KEY, isCollapsed ? '1' : '0');
-    }
-
-    function initBriefCollapse() {
-        if (localStorage.getItem(BRIEF_COLLAPSED_KEY) === '1') {
-            document.getElementById('brief-collapsible').classList.add('collapsed');
-            document.getElementById('brief-collapse-btn').classList.add('collapsed');
-        }
-    }
-
-    initBriefCollapse();
     loadTags();
     load();
-    loadBrief();
 
     // Delete article
     async function deleteArticle(e, id) {
@@ -1984,7 +1742,6 @@
         document.getElementById('notes-view').classList.toggle('active', view === 'notes');
         document.getElementById('evolution-view').classList.toggle('active', view === 'evolution');
         document.getElementById('insights-view').classList.toggle('active', view === 'insights');
-        document.getElementById('brief-card').style.display = view === 'library' ? '' : 'none';
         document.getElementById('nav-inbox').classList.toggle('active', view === 'inbox');
         document.getElementById('nav-notes').classList.toggle('active', view === 'notes');
         document.getElementById('nav-evolution').classList.toggle('active', view === 'evolution');
