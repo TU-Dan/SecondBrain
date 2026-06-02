@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import html as html_lib
 import urllib.request
 import yt_dlp
 import trafilatura
@@ -101,6 +102,19 @@ def _extract_title(html: str) -> str | None:
     return re.sub(r"\s+", " ", title).strip() or None
 
 
+def detect_url_platform(url: str) -> str:
+    lower = url.lower()
+    if "youtube.com" in lower or "youtu.be" in lower:
+        return "youtube"
+    if "douyin.com" in lower or "iesdouyin.com" in lower:
+        return "douyin"
+    if "bilibili.com" in lower or "b23.tv" in lower:
+        return "bilibili"
+    if "mp.weixin.qq.com" in lower:
+        return "wechat"
+    return "url"
+
+
 def extract_from_url(url: str) -> tuple[str, str | None]:
     """Extract text and og:image thumbnail from a web page."""
     html = _fetch_html(url)
@@ -123,17 +137,68 @@ def extract_from_url(url: str) -> tuple[str, str | None]:
     return text, thumbnail
 
 
+def _clean_html_text(fragment: str) -> str:
+    fragment = re.sub(r"(?is)<script[^>]*>.*?</script>", "", fragment)
+    fragment = re.sub(r"(?is)<style[^>]*>.*?</style>", "", fragment)
+    fragment = re.sub(r"(?i)<br\s*/?>", "\n", fragment)
+    fragment = re.sub(r"(?i)</p\s*>", "\n\n", fragment)
+    fragment = re.sub(r"(?i)</section\s*>", "\n", fragment)
+    text = re.sub(r"<[^>]+>", "", fragment)
+    text = html_lib.unescape(text)
+    text = re.sub(r"[ \t\u00a0]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _extract_js_string(html: str, name: str) -> str:
+    m = re.search(rf"var\s+{re.escape(name)}\s*=\s*(['\"])(.*?)\1\s*;", html, re.DOTALL)
+    if not m:
+        return ""
+    value = m.group(2)
+    try:
+        value = bytes(value, "utf-8").decode("unicode_escape")
+    except Exception:
+        pass
+    return html_lib.unescape(value).strip()
+
+
+def extract_from_wechat(url: str) -> tuple[str, str | None]:
+    html = _fetch_html(url)
+    if not html:
+        return "", None
+
+    title = _extract_js_string(html, "msg_title") or _extract_title(html) or ""
+    desc = _extract_js_string(html, "msg_desc")
+    thumbnail = _extract_js_string(html, "msg_cdn_url") or _extract_og_image(html)
+
+    body = ""
+    m = re.search(
+        r'<div[^>]+id=["\']js_content["\'][^>]*>(.*?)</div>\s*</div>\s*<script',
+        html,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if m:
+        body = _clean_html_text(m.group(1))
+
+    if len(body) < 200:
+        body = trafilatura.extract(html, include_comments=False, include_tables=False) or body
+
+    parts = [p for p in [title, desc, body] if p]
+    return "\n\n".join(parts).strip(), thumbnail
+
+
 def _ydl_base_opts(tmpdir: str) -> dict:
     opts = {
         'skip_download': True,
         'writesubtitles': True,
         'writeautomaticsub': True,
         'subtitleslangs': ['zh-Hans', 'zh-Hant', 'zh', 'en'],
-        'subtitlesformat': 'vtt',
+        'subtitlesformat': 'vtt/srt/best',
         'outtmpl': os.path.join(tmpdir, '%(id)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'ignoreerrors': True,
+        'noplaylist': True,
         'extractor_args': {
             'youtube': {
                 'player_client': ['tv_embedded', 'android', 'web'],
@@ -166,6 +231,68 @@ def _parse_vtt(path: str) -> str:
     return ' '.join(lines)
 
 
+def _parse_subtitle_file(path: str) -> str:
+    if path.endswith(".vtt") or path.endswith(".srt"):
+        return _parse_vtt(path)
+    return ""
+
+
+def _build_video_text(info: dict, sub_text: str, platform_label: str) -> str:
+    title = info.get("title") or ""
+    description = info.get("description") or ""
+    uploader = info.get("uploader") or info.get("channel") or info.get("creator") or ""
+    duration = info.get("duration")
+    tags = info.get("tags") or []
+
+    meta = []
+    if title:
+        meta.append(title)
+    if uploader:
+        meta.append(f"作者：{uploader}")
+    meta.append(f"平台：{platform_label}")
+    if duration:
+        meta.append(f"时长：{duration} 秒")
+    if tags:
+        meta.append("标签：" + "、".join(str(t) for t in tags[:12]))
+
+    content_parts = ["\n".join(meta)]
+    if sub_text:
+        content_parts.append("视频字幕/转写：\n" + sub_text)
+    if description and description not in sub_text:
+        content_parts.append("视频简介：\n" + description)
+    return "\n\n".join(part for part in content_parts if part).strip()
+
+
+def extract_from_video_platform(url: str, platform_label: str) -> tuple[str, str | None]:
+    """Extract subtitles/metadata from a video platform supported by yt-dlp."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        opts = _ydl_base_opts(tmpdir)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+
+            if not info:
+                return "", None
+
+            sub_text = ""
+            for fname in os.listdir(tmpdir):
+                if fname.endswith((".vtt", ".srt")):
+                    try:
+                        sub_text = _parse_subtitle_file(os.path.join(tmpdir, fname))
+                        if sub_text:
+                            break
+                    except Exception as e:
+                        print(f"Warning: subtitle parse error ({e})")
+
+            text = _build_video_text(info, sub_text, platform_label)
+            thumbnail = info.get("thumbnail")
+            return text, thumbnail
+
+        except Exception as e:
+            print(f"Error extracting from {platform_label}: {e}")
+            return "", None
+
+
 def extract_from_youtube(url: str) -> tuple[str, str | None]:
     """Extract subtitles (or description) and thumbnail from a YouTube video."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,9 +310,9 @@ def extract_from_youtube(url: str) -> tuple[str, str | None]:
 
             sub_text = ""
             for fname in os.listdir(tmpdir):
-                if fname.endswith('.vtt'):
+                if fname.endswith(('.vtt', '.srt')):
                     try:
-                        sub_text = _parse_vtt(os.path.join(tmpdir, fname))
+                        sub_text = _parse_subtitle_file(os.path.join(tmpdir, fname))
                         if sub_text:
                             break
                     except Exception as e:
@@ -224,7 +351,7 @@ def extract_from_txt(file_path: str) -> tuple[str, None]:
 
 
 def download_youtube_audio(url: str, out_dir: str = "static/audio") -> str | None:
-    """Download YouTube audio in best available format (no ffmpeg needed).
+    """Download audio from a yt-dlp supported video URL.
     Returns filename or None."""
     os.makedirs(out_dir, exist_ok=True)
     out_name = uuid.uuid4().hex
@@ -264,10 +391,17 @@ def download_youtube_audio(url: str, out_dir: str = "static/audio") -> str | Non
 def extract_content(source: str, source_type: str = 'url') -> tuple[str, str | None]:
     """
     Main entry point. Returns (text, thumbnail_url | None).
-    source_type: 'url' | 'youtube' | 'pdf' | 'txt'
+    source_type: 'url' | 'youtube' | 'douyin' | 'bilibili' | 'wechat' | 'pdf' | 'txt'
     """
-    if source_type == 'youtube' or 'youtube.com' in source or 'youtu.be' in source:
+    platform = detect_url_platform(source) if source.startswith("http") else source_type
+    if source_type == 'youtube' or platform == 'youtube':
         return extract_from_youtube(source)
+    elif source_type == 'douyin' or platform == 'douyin':
+        return extract_from_video_platform(source, "抖音")
+    elif source_type == 'bilibili' or platform == 'bilibili':
+        return extract_from_video_platform(source, "B站")
+    elif source_type == 'wechat' or platform == 'wechat':
+        return extract_from_wechat(source)
     elif source_type == 'url' or source.startswith('http'):
         return extract_from_url(source)
     elif source_type == 'pdf':

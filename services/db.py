@@ -111,9 +111,15 @@ def init_db():
                 id TEXT PRIMARY KEY,
                 type TEXT NOT NULL,
                 title TEXT NOT NULL,
+                objective TEXT,
+                success_criteria_json TEXT DEFAULT '[]',
                 payload_json TEXT DEFAULT '{}',
                 status TEXT DEFAULT 'pending',
                 priority INTEGER DEFAULT 50,
+                review_required INTEGER DEFAULT 0,
+                next_action TEXT,
+                artifact_type TEXT,
+                artifact_id TEXT,
                 attempts INTEGER DEFAULT 0,
                 scheduled_at TEXT,
                 started_at TEXT,
@@ -128,6 +134,18 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_agent_tasks_status_schedule
             ON agent_tasks(status, scheduled_at, priority)
         """)
+        _ensure_columns(
+            conn,
+            "agent_tasks",
+            {
+                "objective": "TEXT",
+                "success_criteria_json": "TEXT DEFAULT '[]'",
+                "review_required": "INTEGER DEFAULT 0",
+                "next_action": "TEXT",
+                "artifact_type": "TEXT",
+                "artifact_id": "TEXT",
+            },
+        )
         conn.execute("""
             CREATE TABLE IF NOT EXISTS evolution_log (
                 id TEXT PRIMARY KEY,
@@ -171,6 +189,17 @@ def init_db():
         """)
         conn.commit()
     _scan_scripts_dir()
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """Add missing columns for lightweight SQLite migrations."""
+    existing = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def _parse_script(path: str) -> dict:
@@ -393,6 +422,21 @@ def update_article_summary(article_id: str, summary: str, word_count: int = None
             conn.execute(
                 "UPDATE articles SET summary=?, word_count=? WHERE id=?",
                 (summary, word_count, article_id),
+            )
+        conn.commit()
+
+
+def update_article_content_path(article_id: str, article_md_path: str, word_count: int = None):
+    with get_conn() as conn:
+        if word_count is None:
+            conn.execute(
+                "UPDATE articles SET article_md_path=? WHERE id=?",
+                (article_md_path, article_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE articles SET article_md_path=?, word_count=? WHERE id=?",
+                (article_md_path, word_count, article_id),
             )
         conn.commit()
 
@@ -714,6 +758,12 @@ def enqueue_agent_task(
     payload: dict = None,
     priority: int = 50,
     scheduled_at: str = None,
+    objective: str = None,
+    success_criteria: list[str] = None,
+    review_required: bool = False,
+    next_action: str = None,
+    artifact_type: str = None,
+    artifact_id: str = None,
 ) -> str:
     task_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc).isoformat()
@@ -721,16 +771,24 @@ def enqueue_agent_task(
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO agent_tasks
-               (id, type, title, payload_json, status, priority, attempts,
+               (id, type, title, objective, success_criteria_json,
+                payload_json, status, priority, review_required, next_action,
+                artifact_type, artifact_id, attempts,
                 scheduled_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 task_id,
                 task_type,
                 title,
+                objective,
+                json.dumps(success_criteria or [], ensure_ascii=False),
                 json.dumps(payload or {}, ensure_ascii=False),
                 "pending",
                 priority,
+                1 if review_required else 0,
+                next_action,
+                artifact_type,
+                artifact_id,
                 0,
                 scheduled,
                 now,
@@ -753,7 +811,7 @@ def list_agent_tasks(status: str = None, limit: int = 50) -> list[dict]:
                 "SELECT * FROM agent_tasks ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-    return [dict(r) for r in rows]
+    return [_decode_agent_task(r) for r in rows]
 
 
 def get_next_agent_task():
@@ -766,7 +824,7 @@ def get_next_agent_task():
                LIMIT 1""",
             (now,),
         ).fetchone()
-    return dict(row) if row else None
+    return _decode_agent_task(row) if row else None
 
 
 def reset_stale_agent_tasks(timeout_minutes: int = 45) -> int:
@@ -790,14 +848,20 @@ def reset_stale_agent_tasks(timeout_minutes: int = 45) -> int:
 def get_agent_task(task_id: str):
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM agent_tasks WHERE id=?", (task_id,)).fetchone()
-    return dict(row) if row else None
+    return _decode_agent_task(row) if row else None
 
 
 def update_agent_task(task_id: str, **fields):
     allowed = {
         "status", "attempts", "started_at", "finished_at",
         "result_json", "error", "scheduled_at", "updated_at",
+        "objective", "success_criteria_json", "review_required", "next_action",
+        "artifact_type", "artifact_id",
     }
+    if "success_criteria" in fields:
+        fields["success_criteria_json"] = json.dumps(fields.pop("success_criteria") or [], ensure_ascii=False)
+    if "review_required" in fields:
+        fields["review_required"] = 1 if fields["review_required"] else 0
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
@@ -807,6 +871,19 @@ def update_agent_task(task_id: str, **fields):
     with get_conn() as conn:
         conn.execute(f"UPDATE agent_tasks SET {columns} WHERE id=?", values)
         conn.commit()
+
+
+def _decode_agent_task(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+    task = dict(row)
+    raw_criteria = task.get("success_criteria_json") or "[]"
+    try:
+        task["success_criteria"] = json.loads(raw_criteria)
+    except Exception:
+        task["success_criteria"] = []
+    task["review_required"] = bool(task.get("review_required"))
+    return task
 
 
 def add_evolution_log(

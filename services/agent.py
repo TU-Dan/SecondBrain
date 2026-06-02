@@ -5,7 +5,7 @@ Triggers agent_loop.run() for reasoning tasks instead of hardcoded logic.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -144,10 +144,11 @@ def start():
         return
 
     _scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    first_background_run = datetime.now() + timedelta(minutes=5)
 
     # Hourly: RSS sync
     _scheduler.add_job(task_sync_feeds, "interval", hours=1, id="sync_feeds",
-                       next_run_time=datetime.now())
+                       next_run_time=first_background_run)
 
     # After each sync: embed new content (no-op without OpenAI key)
     _scheduler.add_job(task_embed_stale, "interval", hours=1, id="embed_stale",
@@ -155,7 +156,7 @@ def start():
 
     # Every few minutes: run one autonomous task from the queue.
     _scheduler.add_job(task_run_agent_queue, "interval", minutes=3, id="agent_task_queue",
-                       next_run_time=datetime.now())
+                       next_run_time=first_background_run)
 
     # Daily 06:30: discovery — search web for interest-matched content
     _scheduler.add_job(task_daily_discovery, CronTrigger(hour=6, minute=30),

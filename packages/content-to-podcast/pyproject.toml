@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+content-to-podcast = "content_to_podcast.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["content_to_podcast*"]

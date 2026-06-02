@@ -32,12 +32,30 @@ def enqueue_article_evolution(article_id: str) -> list[str]:
             f"消化文章：《{title}》",
             {"article_id": article_id},
             priority=80,
+            objective="让新文章进入可检索、可连接的知识状态。",
+            success_criteria=[
+                "文章元数据完整",
+                "缺失标签时自动补齐标签",
+                "提炼出可用于后续连接的核心观点",
+            ],
+            next_action="读取文章内容，检查标签，并提炼候选观点。",
+            artifact_type="article",
+            artifact_id=article_id,
         ),
         db.enqueue_agent_task(
             "connect_article",
             f"连接文章：《{title}》",
             {"article_id": article_id},
             priority=60,
+            objective="把新文章与大脑中已有知识建立高价值连接。",
+            success_criteria=[
+                "至少从两个角度检索已有知识",
+                "写入或更新一条跨文章洞察",
+                "文章 insights 中保留 Agent 分析摘要",
+            ],
+            next_action="调用 ReAct agent 搜索相关记忆并写入洞察。",
+            artifact_type="article",
+            artifact_id=article_id,
         ),
     ]
     db.add_evolution_log(
@@ -59,6 +77,15 @@ def enqueue_highlight_analysis(article_id: str, highlight_text: str) -> str:
         f"分析高亮：《{title}》",
         {"article_id": article_id, "text": highlight_text},
         priority=90,  # higher than article tasks — user signal
+        objective="把用户高亮转化为知识连接或洞察。",
+        success_criteria=[
+            "解释这段高亮为什么重要",
+            "判断它与已有知识的关系",
+            "必要时写入一条 insight",
+        ],
+        next_action="检索相关记忆并分析高亮的知识价值。",
+        artifact_type="article",
+        artifact_id=article_id,
     )
     db.add_evolution_log(
         "task_created",
@@ -94,6 +121,7 @@ def _run_task(task: dict) -> dict:
         started_at=now,
         finished_at=None,
         error=None,
+        next_action="正在执行任务处理器。",
     )
     db.add_evolution_log(
         "task_started",
@@ -112,6 +140,7 @@ def _run_task(task: dict) -> dict:
             status="done",
             finished_at=datetime.now(timezone.utc).isoformat(),
             result_json=json.dumps(result or {}, ensure_ascii=False),
+            next_action="任务已完成，等待后续审查或下一轮调度。",
         )
         db.add_evolution_log(
             "task_completed",
@@ -131,6 +160,7 @@ def _run_task(task: dict) -> dict:
                 scheduled_at=scheduled_at,
                 finished_at=datetime.now(timezone.utc).isoformat(),
                 error=error,
+                next_action=f"等待 {RETRY_DELAY_MINUTES} 分钟后自动重试。",
             )
             db.add_evolution_log(
                 "task_retry_scheduled",
@@ -150,6 +180,8 @@ def _run_task(task: dict) -> dict:
             status="failed",
             finished_at=datetime.now(timezone.utc).isoformat(),
             error=error,
+            review_required=True,
+            next_action="需要人工查看失败原因，再决定重试、修改 prompt 或关闭任务。",
         )
         db.add_evolution_log(
             "task_failed",
@@ -361,8 +393,42 @@ def analyze_highlight(task: dict, payload: dict) -> dict:
     return {"article_id": article_id, "analysis_preview": analysis[:150]}
 
 
+def manual_agent_task(task: dict, payload: dict) -> dict:
+    """Run an open-ended task through the ReAct agent loop."""
+    objective = task.get("objective") or payload.get("objective") or task.get("title") or "完成用户创建的任务"
+    criteria = task.get("success_criteria") or payload.get("success_criteria") or []
+    context = payload.get("context") or payload.get("page_context") or {}
+    artifact_type = task.get("artifact_type")
+    artifact_id = task.get("artifact_id")
+
+    prompt = (
+        f"你正在执行一个 SecondBrain Agent 队列任务。\n\n"
+        f"任务标题：{task.get('title')}\n"
+        f"目标：{objective}\n"
+        f"成功标准：{json.dumps(criteria, ensure_ascii=False)}\n"
+        f"关联对象：{artifact_type or '无'} {artifact_id or ''}\n"
+        f"上下文：{json.dumps(context, ensure_ascii=False)[:3000]}\n\n"
+        f"请自主选择可用工具完成任务。若需要修改页面或执行高风险操作，优先生成 proposal，等待用户确认。"
+    )
+
+    db.update_agent_task(task["id"], next_action="调用 ReAct agent 执行开放式任务。")
+    from services.agent_loop import run as agent_run
+
+    result = agent_run(prompt, max_steps=int(payload.get("max_steps") or 8))
+    db.add_evolution_log(
+        "manual_task_completed",
+        f"开放式任务完成：{task.get('title')}",
+        task_id=task["id"],
+        after={"preview": result[:300]},
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+    )
+    return {"preview": result[:500], "full_result": result}
+
+
 HANDLERS = {
     "digest_article": digest_article,
     "connect_article": connect_article,
     "analyze_highlight": analyze_highlight,
+    "manual_agent_task": manual_agent_task,
 }

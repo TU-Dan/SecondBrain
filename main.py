@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "packages", "content-
 
 from content_to_podcast import PodcastGenerationOptions, generate_podcast
 from curl_cffi import requests as cffi_requests
-from services.extractor import extract_content, download_youtube_audio
+from services.extractor import detect_url_platform, download_youtube_audio, extract_content
 from services.llm import distill_and_translate, format_transcript, chunk_text, polish_chunk, detect_language, generate_tags, generate_title, generate_social_post, extract_insights, generate_daily_brief, CHUNK_THRESHOLD
 from services.tts import generate_audio_sync
 from services.rss import add_episode, clean_description
@@ -79,7 +79,6 @@ async def lifespan(app: FastAPI):
     import asyncio
     init_db()
     threading.Thread(target=_retag_untagged, daemon=True).start()
-    asyncio.create_task(refresh_all_feeds())
     from services import agent
     agent.start()
     yield
@@ -179,7 +178,16 @@ def save_script(title: str, script: str, part_label: str = "") -> str:
     return f"/static/scripts/{filename}"
 
 
-def process_content_task(job_id: str, source: str, source_type: str, title: str, base_url: str, voice: str, use_original_audio: bool = False):
+def process_content_task(
+    job_id: str,
+    source: str,
+    source_type: str,
+    title: str,
+    base_url: str,
+    voice: str,
+    use_original_audio: bool = False,
+    summarize: bool = False,
+):
     try:
         def on_status(status: str, message: str, file: dict = None):
             update_job(job_id, status, message, file=file)
@@ -192,6 +200,7 @@ def process_content_task(job_id: str, source: str, source_type: str, title: str,
                 base_url=base_url,
                 voice=voice,
                 use_original_audio=use_original_audio,
+                summarize=summarize,
             ),
             on_status=on_status,
         )
@@ -340,8 +349,14 @@ async def api_article(article_id: str):
 async def get_article_content(article_id: str):
     from services.db import get_article
     article = get_article(article_id)
-    if not article or not article.get("article_md_path"):
+    if not article:
         return JSONResponse({"error": "not found"}, status_code=404)
+    if not article.get("article_md_path"):
+        fallback = article.get("summary") or ""
+        if not fallback:
+            fallback = "正文还没有写入。可能是后台入库任务仍在提取内容，或原链接无法抓取正文。"
+        content = f"# {article.get('title') or '未命名文章'}\n\n{fallback}"
+        return JSONResponse({"content": content, "fallback": True})
     # article_md_path is like /static/scripts/foo.md — strip leading /
     file_path = article["article_md_path"].lstrip("/")
     try:
@@ -460,6 +475,40 @@ async def api_brain_stats():
 async def api_agent_tasks(status: str = None, limit: int = 50):
     from services import db
     return JSONResponse(db.list_agent_tasks(status=status, limit=limit))
+
+
+@app.post("/api/agent/tasks")
+async def api_create_agent_task(request: Request):
+    from services import db
+    body = await request.json()
+    task_type = (body.get("type") or "manual_agent_task").strip()
+    title = (body.get("title") or body.get("objective") or "Agent 任务").strip()
+    task_id = db.enqueue_agent_task(
+        task_type,
+        title,
+        body.get("payload") or {},
+        priority=int(body.get("priority") or 50),
+        scheduled_at=body.get("scheduled_at"),
+        objective=body.get("objective"),
+        success_criteria=body.get("success_criteria") or [],
+        review_required=bool(body.get("review_required")),
+        next_action=body.get("next_action") or "等待 Agent 调度执行。",
+        artifact_type=body.get("artifact_type"),
+        artifact_id=body.get("artifact_id"),
+    )
+    task = db.get_agent_task(task_id)
+    db.add_evolution_log(
+        "task_created",
+        f"创建 Agent 任务：{title}",
+        task_id=task_id,
+        after={
+            "objective": body.get("objective"),
+            "success_criteria": body.get("success_criteria") or [],
+        },
+        artifact_type=body.get("artifact_type"),
+        artifact_id=body.get("artifact_id"),
+    )
+    return JSONResponse(task, status_code=201)
 
 
 @app.post("/api/agent/tasks/{task_id}/run")
@@ -825,7 +874,7 @@ async def quick_save_url(request: Request):
     if not url:
         return JSONResponse({"error": "url required"}, status_code=400)
 
-    source_type = "youtube" if ("youtube.com" in url or "youtu.be" in url) else "url"
+    source_type = detect_url_platform(url)
     text, thumbnail_url = extract_content(url, source_type)
     if not text:
         return JSONResponse({"error": "无法提取内容，请检查链接"}, status_code=422)
@@ -833,12 +882,14 @@ async def quick_save_url(request: Request):
     title = generate_title(text)
     episode_image = download_thumbnail(thumbnail_url) if thumbnail_url else None
     summary = text[:200].replace("\n", " ")
+    script_url = save_script(title, text)
 
     article_id = add_article(
         title=title,
         source_url=url,
         source_type=source_type,
         summary=summary,
+        article_md_path=script_url,
         image_url=episode_image,
         word_count=len(text),
     )
@@ -965,11 +1016,11 @@ async def api_inbox_item_to_podcast(item_id: str, request: Request, background_t
 
     job_id = uuid.uuid4().hex
     jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
-    source_type = 'youtube' if 'youtube.com' in url or 'youtu.be' in url else 'url'
+    source_type = detect_url_platform(url)
     base_url = str(request.base_url).rstrip('/')
     title = item.get("title") or ""
     update_inbox_item(item_id, status="processing")
-    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, "zh-CN-YunxiNeural", True)
+    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, "zh-CN-YunxiNeural", True, False)
     return JSONResponse({"ok": True, "job_id": job_id})
 
 
@@ -1071,12 +1122,13 @@ async def generate_from_url(
     title: str = Form(""),
     voice: str = Form("zh-CN-YunxiNeural"),
     use_original_audio: bool = Form(False),
+    summarize: bool = Form(False),
 ):
     job_id = uuid.uuid4().hex
     jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
-    source_type = 'youtube' if 'youtube.com' in url or 'youtu.be' in url else 'url'
+    source_type = detect_url_platform(url)
     base_url = str(request.base_url).rstrip('/')
-    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, voice, use_original_audio)
+    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, voice, use_original_audio, summarize)
     return JSONResponse({"job_id": job_id})
 
 
@@ -1086,7 +1138,8 @@ async def generate_from_file(
     request: Request,
     file: UploadFile = File(...),
     title: str = Form(""),
-    voice: str = Form("zh-CN-YunxiNeural")
+    voice: str = Form("zh-CN-YunxiNeural"),
+    summarize: bool = Form(False),
 ):
     temp_dir = "temp_uploads"
     os.makedirs(temp_dir, exist_ok=True)
@@ -1098,5 +1151,5 @@ async def generate_from_file(
     jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
     source_type = 'pdf' if file.filename.lower().endswith('.pdf') else 'txt'
     base_url = str(request.base_url).rstrip('/')
-    background_tasks.add_task(process_content_task, job_id, temp_path, source_type, title, base_url, voice)
+    background_tasks.add_task(process_content_task, job_id, temp_path, source_type, title, base_url, voice, False, summarize)
     return JSONResponse({"job_id": job_id})

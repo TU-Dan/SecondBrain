@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CHUNK_THRESHOLD = 80000
+CHUNK_THRESHOLD = 12000
 
 
 def _get_client():
@@ -25,7 +25,7 @@ def detect_language(text: str) -> str:
     return 'zh' if chinese_chars / len(sample) > 0.1 else 'en'
 
 
-def chunk_text(text: str, chunk_size: int = 80000) -> list[str]:
+def chunk_text(text: str, chunk_size: int = CHUNK_THRESHOLD) -> list[str]:
     """Split text into chunks at sentence boundaries."""
     sentence_endings = {'。', '！', '？', '!', '?', '\n'}
     chunks = []
@@ -210,7 +210,10 @@ def literal_translate_chunk(chunk: str, part_index: int, total_parts: int) -> st
 
 
 def distill_and_translate(text: str) -> tuple[str, list[str]] | None:
-    """Distill and translate text into a Chinese podcast script.
+    """Create a concise Chinese podcast script.
+
+    This is intentionally a summary mode. The default podcast generation path
+    uses format_transcript()/polish_chunk() to preserve source fidelity.
     Returns (script_markdown, tags) or None on failure."""
     client = _get_client()
     if not client:

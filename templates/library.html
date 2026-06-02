@@ -213,28 +213,6 @@
             gap: 7px;
         }
 
-        .btn-new {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            width: 100%;
-            padding: 9px;
-            background: linear-gradient(135deg, var(--accent), var(--accent-2));
-            color: white;
-            border: none;
-            border-radius: var(--radius-sm);
-            font-size: 13.5px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            transition: opacity 0.15s;
-            box-shadow: 0 4px 16px var(--accent-glow);
-        }
-
-        .btn-new:hover { opacity: 0.88; }
-        .btn-new svg { width: 13px; height: 13px; }
-
         .btn-save-quick {
             display: flex;
             align-items: center;
@@ -423,6 +401,9 @@
 
         .badge-url     { background: rgba(74,103,65,0.14);  color: var(--accent); }
         .badge-youtube { background: rgba(184,84,80,0.12);  color: #b85450; }
+        .badge-douyin  { background: rgba(184,84,80,0.12);  color: #b85450; }
+        .badge-bilibili { background: rgba(47,131,166,0.14); color: #2f83a6; }
+        .badge-wechat  { background: rgba(74,140,92,0.14);  color: var(--success); }
         .badge-pdf     { background: rgba(138,100,64,0.14); color: var(--accent-2); }
         .badge-txt     { background: rgba(74,140,92,0.14);  color: var(--success); }
         .badge-imported { background: rgba(74,103,65,0.12); color: var(--accent); }
@@ -1022,7 +1003,7 @@
 
         .capture-row {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 120px 92px;
+            grid-template-columns: minmax(0, 1fr) 92px;
             gap: 8px;
             align-items: center;
         }
@@ -1053,17 +1034,29 @@
         .capture-status.error { color: var(--error); }
         .capture-status.success { color: var(--success); }
 
-        .inbox-filters {
+        .inbox-toolbar {
             display: flex;
             align-items: center;
-            gap: 6px;
+            justify-content: space-between;
             flex-wrap: wrap;
+            gap: 8px;
             margin-bottom: 12px;
         }
 
-        .inbox-filter {
-            padding: 5px 10px;
-            border-radius: 999px;
+        .inbox-count-label {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .inbox-secondary-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .inbox-secondary-btn {
+            padding: 5px 9px;
+            border-radius: 8px;
             border: 1px solid var(--border);
             background: var(--surface);
             color: var(--text-muted);
@@ -1072,11 +1065,7 @@
             cursor: pointer;
         }
 
-        .inbox-filter.active {
-            color: var(--accent);
-            border-color: rgba(74,103,65,0.35);
-            background: var(--accent-glow);
-        }
+        .inbox-secondary-btn:hover { border-color: var(--accent); color: var(--accent); }
 
         .evolution-layout {
             display: grid;
@@ -1175,50 +1164,37 @@
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius);
-            padding: 14px 16px;
+            padding: 14px;
             margin-bottom: 10px;
             display: flex;
-            gap: 14px;
+            gap: 12px;
             align-items: flex-start;
             transition: border-color 0.15s;
         }
         .inbox-item:hover { border-color: rgba(74,103,65,0.35); }
 
-        .score-ring {
-            width: 40px;
-            height: 40px;
+        .inbox-source-dot {
+            width: 8px;
+            height: 8px;
+            margin-top: 8px;
             border-radius: 50%;
             flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: 700;
+            background: var(--accent);
+            opacity: 0.7;
         }
-        .score-high  { background: rgba(74,140,92,0.16);  color: var(--success); }
-        .score-mid   { background: rgba(138,100,64,0.16); color: var(--accent-2); }
-        .score-low   { background: var(--surface-2); color: var(--text-muted); }
-
-        .intent-badge {
-            width: 44px;
-            min-height: 40px;
-            border-radius: 12px;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 11px;
-            font-weight: 700;
-            text-align: center;
-            line-height: 1.2;
-            background: var(--accent-glow);
-            color: var(--accent);
-        }
-        .intent-badge.todo { background: rgba(138,100,64,0.16); color: var(--accent-2); }
-        .intent-badge.note { background: var(--surface-2); color: var(--text-muted); }
-        .intent-badge.rss { background: rgba(74,140,92,0.16); color: var(--success); }
+        .inbox-source-dot.rss { background: var(--success); }
+        .inbox-source-dot.todo { background: var(--accent-2); }
+        .inbox-source-dot.note { background: var(--text-muted); }
 
         .inbox-item-body { flex: 1; min-width: 0; }
+
+        .inbox-reason {
+            color: var(--accent);
+            font-size: 11.5px;
+            font-weight: 600;
+            line-height: 1.4;
+            margin-bottom: 5px;
+        }
 
         .inbox-item-title {
             font-size: 14px;
@@ -1268,30 +1244,46 @@
 
         .inbox-item-actions {
             display: flex;
-            gap: 5px;
+            gap: 6px;
             flex-shrink: 0;
             align-items: flex-start;
+            flex-wrap: wrap;
+            justify-content: flex-end;
         }
 
-        .btn-inbox-save {
-            padding: 5px 11px;
+        .btn-inbox-save,
+        .btn-inbox-read,
+        .btn-inbox-more {
+            padding: 6px 10px;
             font-size: 12px;
             font-weight: 600;
             font-family: inherit;
+            border-radius: 7px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .btn-inbox-save {
             background: linear-gradient(135deg, var(--accent), var(--accent-2));
             color: white;
             border: none;
-            border-radius: 7px;
-            cursor: pointer;
-            transition: opacity 0.15s;
-            white-space: nowrap;
         }
         .btn-inbox-save:hover { opacity: 0.85; }
         .btn-inbox-save:disabled { opacity: 0.4; cursor: not-allowed; }
 
+        .btn-inbox-read,
+        .btn-inbox-more {
+            background: var(--surface-2);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-inbox-read:hover,
+        .btn-inbox-more:hover { border-color: var(--accent); color: var(--accent); }
+
         .btn-inbox-dismiss {
-            padding: 5px 8px;
+            padding: 6px 10px;
             font-size: 12px;
+            font-weight: 600;
             font-family: inherit;
             background: var(--surface-2);
             color: var(--text-muted);
@@ -1301,6 +1293,23 @@
             transition: all 0.15s;
         }
         .btn-inbox-dismiss:hover { color: var(--error); border-color: rgba(248,113,113,0.3); }
+
+        .inbox-more-panel {
+            display: none;
+            width: 100%;
+            justify-content: flex-end;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .inbox-more-panel.open { display: flex; }
+
+        @media (max-width: 760px) {
+            .inbox-item { flex-direction: column; }
+            .inbox-source-dot { display: none; }
+            .inbox-item-actions { width: 100%; justify-content: flex-start; }
+            .inbox-more-panel { justify-content: flex-start; }
+            .capture-row { grid-template-columns: 1fr; }
+        }
 
         /* Feed management modal */
         .feed-item-row {
@@ -1376,9 +1385,9 @@
                 <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                 快速收藏
             </button>
-            <a href="/generate" class="btn-new">
+            <a href="/generate" class="btn-save-quick" title="旧入口：后续会合并到收件箱">
                 <svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                新建播客
+                导入文件/播客
             </a>
         </div>
     </aside>
@@ -1464,23 +1473,17 @@
             </div>
             <div class="capture-panel">
                 <div class="capture-row">
-                    <input id="capture-input" type="text" placeholder="粘贴链接、输入 todo 或临时想法..." onkeydown="if(event.key==='Enter')captureInboxItem()">
-                    <select id="capture-intent">
-                        <option value="read">待读</option>
-                        <option value="podcast">待播客</option>
-                        <option value="todo">Todo</option>
-                        <option value="note">备注</option>
-                    </select>
+                    <input id="capture-input" type="text" placeholder="粘贴链接或临时想法..." onkeydown="if(event.key==='Enter')captureInboxItem()">
                     <button class="btn-inbox-save" onclick="captureInboxItem()">保存</button>
                 </div>
                 <div id="capture-status" class="capture-status"></div>
             </div>
-            <div class="inbox-filters">
-                <button class="inbox-filter active" data-intent="all" onclick="setInboxFilter('all', this)">全部</button>
-                <button class="inbox-filter" data-intent="podcast" onclick="setInboxFilter('podcast', this)">待播客</button>
-                <button class="inbox-filter" data-intent="read" onclick="setInboxFilter('read', this)">待读</button>
-                <button class="inbox-filter" data-intent="todo" onclick="setInboxFilter('todo', this)">Todo</button>
-                <button class="inbox-filter" data-intent="rss" onclick="setInboxFilter('rss', this)">RSS</button>
+            <div class="inbox-toolbar">
+                <span class="inbox-count-label" id="inbox-count-label">所有还没决定命运的东西</span>
+                <div class="inbox-secondary-actions">
+                    <button class="inbox-secondary-btn" onclick="refreshFeeds()">刷新 RSS</button>
+                    <button class="inbox-secondary-btn" onclick="openFeedModal()">管理订阅</button>
+                </div>
             </div>
             <div id="inbox-content">
                 <div class="loading"><div class="spinner"></div> 加载中...</div>
@@ -1620,7 +1623,8 @@
     let totalCount = 0;
 
     const SOURCE_LABELS = {
-        url: '网页', youtube: 'YouTube', pdf: 'PDF', txt: '文本', script: '导入', imported: '导入'
+        url: '网页', youtube: 'YouTube', douyin: '抖音', bilibili: 'B站', wechat: '公众号',
+        pdf: 'PDF', txt: '文本', script: '导入', imported: '导入'
     };
 
     function formatDate(iso) {
@@ -1629,7 +1633,11 @@
     }
 
     function badgeClass(type) {
-        const map = { url:'badge-url', youtube:'badge-youtube', pdf:'badge-pdf', txt:'badge-txt', script:'badge-imported', imported:'badge-imported' };
+        const map = {
+            url:'badge-url', youtube:'badge-youtube', douyin:'badge-douyin',
+            bilibili:'badge-bilibili', wechat:'badge-wechat',
+            pdf:'badge-pdf', txt:'badge-txt', script:'badge-imported', imported:'badge-imported'
+        };
         return map[type] || 'badge-imported';
     }
 
@@ -1654,9 +1662,7 @@
             <svg fill="none" stroke="currentColor" stroke-width="1.2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
         </div>`;
         const wc = a.word_count ? `<span class="card-word-count">${a.word_count.toLocaleString()} 字</span>` : `<span></span>`;
-        const readLink = a.article_md_path
-            ? `<a class="card-read-link" href="/article/${a.id}">阅读<svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></a>`
-            : '';
+        const readLink = `<a class="card-read-link" href="/article/${a.id}" onclick="event.stopPropagation()">阅读<svg fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg></a>`;
         let tags = [];
         try { tags = JSON.parse(a.tags || '[]'); } catch(e) {}
         const tagsHtml = tags.length
@@ -1665,7 +1671,7 @@
                 return `<span class="tag-chip" ${active} onclick="toggleTagFromCard(event,'${t}')">${t}</span>`;
               }).join('')}</div>`
             : '';
-        return `<div class="card">
+        return `<div class="card" onclick="window.location.href='/article/${a.id}'">
             ${thumb}${placeholder}
             <div class="card-body">
                 <div class="card-meta">
@@ -2182,12 +2188,6 @@
         } catch(e) {}
     }
 
-    function scoreClass(score) {
-        if (score >= 70) return 'score-high';
-        if (score >= 40) return 'score-mid';
-        return 'score-low';
-    }
-
     let inboxFilter = 'all';
 
     const INTENT_LABELS = {
@@ -2204,16 +2204,14 @@
 
     async function captureInboxItem() {
         const input = document.getElementById('capture-input');
-        const intentEl = document.getElementById('capture-intent');
         const statusEl = document.getElementById('capture-status');
         const value = input.value.trim();
         if (!value) return;
         statusEl.className = 'capture-status';
         statusEl.textContent = '保存中...';
         const isUrl = isUrlLike(value);
-        const intent = intentEl.value;
         const body = {
-            intent,
+            intent: 'read',
             title: isUrl ? '' : value.slice(0, 80),
             url: isUrl ? value : '',
             note: isUrl ? '' : value,
@@ -2232,7 +2230,7 @@
             input.value = '';
             statusEl.className = 'capture-status success';
             statusEl.textContent = '已保存';
-            setInboxFilter(intent, document.querySelector(`.inbox-filter[data-intent="${intent}"]`));
+            await loadInbox();
             await loadInboxCount();
         } catch (err) {
             statusEl.className = 'capture-status error';
@@ -2240,28 +2238,36 @@
         }
     }
 
-    function setInboxFilter(intent, btn) {
-        inboxFilter = intent;
-        document.querySelectorAll('.inbox-filter').forEach(b => b.classList.remove('active'));
-        btn?.classList.add('active');
-        loadInbox();
+    function inboxSourceLabel(item) {
+        if (item.kind === 'rss') return item.feed_name || 'RSS';
+        return INTENT_LABELS[item.intent] || item.source || '手动';
     }
 
-    function inboxBadge(item) {
-        if (item.kind === 'rss') {
-            return `<div class="intent-badge rss">RSS</div>`;
-        }
-        const label = INTENT_LABELS[item.intent] || item.intent || '收件';
-        return `<div class="intent-badge ${escapeHtml(item.intent || '')}">${escapeHtml(label)}</div>`;
+    function inboxReason(item) {
+        if (item.note) return item.note;
+        if (item.kind === 'rss' && item.relevance_score) return `推荐度 ${item.relevance_score} · ${item.feed_name || 'RSS'}`;
+        if (item.source === 'discovery') return '自动发现';
+        if (item.url) return '待判断是否进入大脑';
+        return '临时捕获';
     }
 
-    function inboxActions(item) {
-        if (item.kind === 'rss') {
-            return `
-                <button class="btn-inbox-save" onclick="saveInboxItem('${item.id}', this)">存入</button>
-                <button class="btn-inbox-dismiss" onclick="dismissInboxItem('${item.id}')">✕</button>
-            `;
-        }
+    function inboxPrimaryActions(item) {
+        const kind = item.kind || 'manual';
+        const saveAction = kind === 'rss'
+            ? `saveInboxItem('${item.id}', this)`
+            : `saveManualInboxItem('${item.id}', this)`;
+        const dismissAction = kind === 'rss'
+            ? `dismissInboxItem('${item.id}')`
+            : `patchManualInboxItem('${item.id}', 'archived')`;
+        return `
+            <button class="btn-inbox-read" data-url="${escapeHtml(item.url || '')}" onclick="readInboxItem(this, '${item.id}')">阅读</button>
+            <button class="btn-inbox-save" onclick="${saveAction}">入库</button>
+            <button class="btn-inbox-dismiss" onclick="${dismissAction}">忽略</button>
+            <button class="btn-inbox-more" onclick="toggleInboxMore('${item.id}')">…</button>
+        `;
+    }
+
+    function inboxMoreActions(item) {
         const podcastBtn = item.intent === 'podcast' && item.url
             ? `<button class="btn-inbox-save" onclick="podcastInboxItem('${item.id}', this)">生成播客</button>`
             : '';
@@ -2269,7 +2275,7 @@
             ${podcastBtn}
             <button class="btn-inbox-dismiss" onclick="patchManualInboxItem('${item.id}', 'done')">完成</button>
             <button class="btn-inbox-dismiss" onclick="patchManualInboxItem('${item.id}', 'archived')">归档</button>
-            <button class="btn-inbox-dismiss" onclick="deleteManualInboxItem('${item.id}')">✕</button>
+            <button class="btn-inbox-dismiss" onclick="deleteManualInboxItem('${item.id}')">删除</button>
         `;
     }
 
@@ -2283,26 +2289,44 @@
             </div>`;
             return;
         }
+        const countLabel = document.getElementById('inbox-count-label');
+        if (countLabel) countLabel.textContent = `${items.length} 条待处理`;
         el.innerHTML = items.map(item => `
             <div class="inbox-item" id="iitem-${escapeHtml(item.id)}">
-                ${item.kind === 'rss' ? `<div class="score-ring ${scoreClass(item.relevance_score)}">${item.relevance_score}</div>` : inboxBadge(item)}
+                <div class="inbox-source-dot ${escapeHtml(item.kind === 'rss' ? 'rss' : (item.intent || ''))}"></div>
                 <div class="inbox-item-body">
+                    <div class="inbox-reason">${escapeHtml(inboxReason(item))}</div>
                     <div class="inbox-item-title">
                         ${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" style="color:inherit;text-decoration:none">${escapeHtml(item.title || item.url)}</a>` : escapeHtml(item.title || '无标题')}
                     </div>
                     ${item.description ? `<div class="inbox-item-desc">${escapeHtml(item.description)}</div>` : ''}
-                    ${item.note ? `<div class="inbox-note">${escapeHtml(item.note)}</div>` : ''}
                     <div class="inbox-item-meta">
-                        <span class="inbox-source-badge">${escapeHtml(item.kind === 'rss' ? (item.feed_name || 'RSS') : (INTENT_LABELS[item.intent] || '手动'))}</span>
+                        <span class="inbox-source-badge">${escapeHtml(inboxSourceLabel(item))}</span>
                         ${item.priority === 'high' ? `<span class="inbox-source-badge">高优先级</span>` : ''}
                         ${item.published_at ? `<span style="font-size:11px;color:var(--text-muted)">${escapeHtml(item.published_at.slice(0,10))}</span>` : ''}
                         ${item.created_at ? `<span style="font-size:11px;color:var(--text-muted)">${escapeHtml(item.created_at.slice(0,10))}</span>` : ''}
                     </div>
                 </div>
                 <div class="inbox-item-actions">
-                    ${inboxActions(item)}
+                    ${inboxPrimaryActions(item)}
+                    <div class="inbox-more-panel" id="imore-${escapeHtml(item.id)}">
+                        ${inboxMoreActions(item)}
+                    </div>
                 </div>
             </div>`).join('');
+    }
+
+    function toggleInboxMore(id) {
+        document.getElementById(`imore-${id}`)?.classList.toggle('open');
+    }
+
+    async function readInboxItem(btn, id) {
+        const url = btn.dataset.url;
+        if (url) {
+            window.open(url, '_blank');
+            return;
+        }
+        await patchManualInboxItem(id, 'done');
     }
 
     async function loadInbox() {
@@ -2332,6 +2356,30 @@
         } catch(e) {
             btn.disabled = false;
             btn.textContent = '存入';
+        }
+    }
+
+    async function saveManualInboxItem(id, btn) {
+        const card = document.getElementById(`iitem-${id}`);
+        const title = card?.querySelector('.inbox-item-title')?.textContent?.trim() || '';
+        const note = card?.querySelector('.inbox-reason')?.textContent?.trim() || '';
+        const url = card?.querySelector('.btn-inbox-read')?.dataset.url || '';
+        btn.disabled = true;
+        btn.textContent = '处理中...';
+        try {
+            const endpoint = url ? '/api/save/url' : '/api/save/text';
+            const body = url ? { url } : { text: title || note };
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!res.ok) throw new Error('save failed');
+            await patchManualInboxItem(id, 'done');
+            btn.textContent = '已入库';
+        } catch(e) {
+            btn.disabled = false;
+            btn.textContent = '入库';
         }
     }
 
