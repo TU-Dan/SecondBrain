@@ -3,6 +3,8 @@ __pycache__/
 data/
 .env
 temp_uploads/
+tools/BBDown/
+tools/douyin-downloader/
 
 # Generated podcast/runtime assets.
 static/audio/

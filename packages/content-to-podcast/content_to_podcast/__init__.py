@@ -6,6 +6,8 @@ from .generator import (
     generate_podcast,
     load_default_services,
 )
+from .source_adapters import PreparedSource, SourcePreparationError
+from .transcription import TranscriptionError, TranscriptionResult, transcribe_audio
 
 __all__ = [
     "GeneratedPodcastItem",
@@ -14,4 +16,9 @@ __all__ = [
     "PodcastGenerationServices",
     "generate_podcast",
     "load_default_services",
+    "PreparedSource",
+    "SourcePreparationError",
+    "TranscriptionError",
+    "TranscriptionResult",
+    "transcribe_audio",
 ]

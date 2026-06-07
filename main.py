@@ -25,12 +25,11 @@ load_dotenv()
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "packages", "content-to-podcast"))
 
-from content_to_podcast import PodcastGenerationOptions, generate_podcast
 from curl_cffi import requests as cffi_requests
 from services.extractor import detect_url_platform, download_youtube_audio, extract_content
 from services.llm import distill_and_translate, format_transcript, chunk_text, polish_chunk, detect_language, generate_tags, generate_title, generate_social_post, extract_insights, generate_daily_brief, CHUNK_THRESHOLD
 from services.tts import generate_audio_sync
-from services.rss import add_episode, clean_description
+from services import db
 from services.db import (
     init_db, add_article, update_tags, get_untagged_articles,
     delete_article, update_article_title, update_insights,
@@ -80,8 +79,11 @@ async def lifespan(app: FastAPI):
     init_db()
     threading.Thread(target=_retag_untagged, daemon=True).start()
     from services import agent
+    from services import podcast_jobs
     agent.start()
+    podcast_jobs.start()
     yield
+    podcast_jobs.stop()
     agent.stop()
 
 
@@ -89,17 +91,6 @@ app = FastAPI(lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
-
-# In-memory job tracking
-jobs: dict[str, dict] = {}
-
-
-def update_job(job_id: str, status: str, message: str, file: dict = None):
-    jobs[job_id]["status"] = status
-    jobs[job_id]["message"] = message
-    if file:
-        jobs[job_id]["files"].append(file)
-
 
 def sanitize_filename(title: str) -> str:
     safe = re.sub(r'[^\w\u4e00-\u9fff]', '_', title)
@@ -176,96 +167,6 @@ def save_script(title: str, script: str, part_label: str = "") -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     return f"/static/scripts/{filename}"
-
-
-def process_content_task(
-    job_id: str,
-    source: str,
-    source_type: str,
-    title: str,
-    base_url: str,
-    voice: str,
-    use_original_audio: bool = False,
-    summarize: bool = False,
-):
-    try:
-        def on_status(status: str, message: str, file: dict = None):
-            update_job(job_id, status, message, file=file)
-
-        result = generate_podcast(
-            PodcastGenerationOptions(
-                source=source,
-                source_type=source_type,
-                title=title,
-                base_url=base_url,
-                voice=voice,
-                use_original_audio=use_original_audio,
-                summarize=summarize,
-            ),
-            on_status=on_status,
-        )
-        jobs[job_id]["title"] = result.title
-        print(f"[{job_id}] Generated: {result.title}")
-
-        for item in result.items:
-            add_episode(
-                title=item.title,
-                description=item.description,
-                audio_filename=item.audio_filename,
-                audio_length=item.audio_length,
-                base_url=base_url,
-                episode_image=item.image_url,
-                audio_mime=item.audio_mime,
-            )
-
-        primary_item = result.items[0]
-        article_id = add_article(
-            title=result.title,
-            source_url=result.source_url,
-            source_type=result.source_type,
-            summary=result.article_summary or primary_item.description,
-            article_md_path=result.article_script_url or primary_item.script_url,
-            transcript_path=result.transcript_url,
-            audio_url=primary_item.audio_url,
-            audio_length=primary_item.audio_length,
-            image_url=result.image_url or primary_item.image_url,
-            word_count=result.article_word_count or primary_item.word_count,
-        )
-        if result.tags:
-            update_tags(article_id, result.tags)
-        threading.Thread(target=_remember_in_bg, args=(article_id,), daemon=True).start()
-
-        file_count = len(jobs[job_id]['files'])
-        print(f"[{job_id}] Finished: {result.title}")
-
-        # Auto-publish to GitHub Pages if configured
-        if os.getenv("GITHUB_PAGES_URL"):
-            update_job(job_id, "publishing", f"内容生成完成，正在发布到 GitHub Pages...")
-            try:
-                result = subprocess.run(
-                    [sys.executable, "scripts/publish_to_pages.py"],
-                    capture_output=True, text=True, timeout=300
-                )
-                if result.returncode == 0:
-                    update_job(job_id, "done", f"全部完成！已发布到 GitHub Pages。")
-                else:
-                    update_job(job_id, "done", f"生成完成，但发布失败：{result.stderr or result.stdout}")
-            except subprocess.TimeoutExpired:
-                update_job(job_id, "done", "生成完成，发布超时，请手动发布。")
-            except Exception as e:
-                update_job(job_id, "done", f"生成完成，发布出错：{e}")
-        else:
-            update_job(job_id, "done", f"全部完成！共生成 {file_count} 个文件。")
-
-    except Exception as e:
-        print(f"[{job_id}] Error: {e}")
-        update_job(job_id, "error", f"处理出错：{e}")
-    finally:
-        if source_type in ['pdf', 'txt'] and os.path.exists(source):
-            try:
-                os.remove(source)
-            except:
-                pass
 
 
 # --- Routes ---
@@ -1016,13 +917,18 @@ async def api_inbox_item_to_podcast(item_id: str, request: Request, background_t
     if not url:
         return JSONResponse({"ok": False, "error": "这条收件箱内容没有 URL，无法生成播客"}, status_code=400)
 
-    job_id = uuid.uuid4().hex
-    jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
+    from services import podcast_jobs
     source_type = detect_url_platform(url)
     base_url = str(request.base_url).rstrip('/')
     title = item.get("title") or ""
+    job_id = podcast_jobs.enqueue(url, source_type, {
+        "title": title,
+        "base_url": base_url,
+        "voice": "zh-CN-YunxiNeural",
+        "use_original_audio": True,
+        "summarize": False,
+    })
     update_inbox_item(item_id, status="processing")
-    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, "zh-CN-YunxiNeural", True, False)
     return JSONResponse({"ok": True, "job_id": job_id})
 
 
@@ -1110,10 +1016,28 @@ async def publish_to_pages():
 
 @app.get("/status/{job_id}")
 async def get_status(job_id: str):
-    job = jobs.get(job_id)
+    job = db.get_podcast_job(job_id)
     if not job:
         return JSONResponse({"status": "not_found", "message": "任务不存在"})
-    return JSONResponse(job)
+    return JSONResponse({
+        "id": job["id"],
+        "status": job["status"],
+        "stage": job["stage"],
+        "message": job["message"],
+        "files": job["files"],
+        "result": job["result"],
+        "error_code": job["error_code"],
+        "error_message": job["error_message"],
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+    })
+
+
+@app.post("/api/podcast-jobs/{job_id}/retry-publish")
+async def retry_podcast_job_publish(job_id: str):
+    from services import podcast_jobs
+    result = await asyncio.to_thread(podcast_jobs.retry_publish, job_id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 
 @app.post("/generate/url")
@@ -1125,12 +1049,19 @@ async def generate_from_url(
     voice: str = Form("zh-CN-YunxiNeural"),
     use_original_audio: bool = Form(False),
     summarize: bool = Form(False),
+    force_transcribe: bool = Form(False),
 ):
-    job_id = uuid.uuid4().hex
-    jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
+    from services import podcast_jobs
     source_type = detect_url_platform(url)
     base_url = str(request.base_url).rstrip('/')
-    background_tasks.add_task(process_content_task, job_id, url, source_type, title, base_url, voice, use_original_audio, summarize)
+    job_id = podcast_jobs.enqueue(url, source_type, {
+        "title": title,
+        "base_url": base_url,
+        "voice": voice,
+        "use_original_audio": use_original_audio,
+        "summarize": summarize,
+        "force_transcribe": force_transcribe,
+    })
     return JSONResponse({"job_id": job_id})
 
 
@@ -1149,9 +1080,14 @@ async def generate_from_file(
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    job_id = uuid.uuid4().hex
-    jobs[job_id] = {"status": "pending", "message": "任务已提交，等待处理...", "files": []}
+    from services import podcast_jobs
     source_type = 'pdf' if file.filename.lower().endswith('.pdf') else 'txt'
     base_url = str(request.base_url).rstrip('/')
-    background_tasks.add_task(process_content_task, job_id, temp_path, source_type, title, base_url, voice, False, summarize)
+    job_id = podcast_jobs.enqueue(temp_path, source_type, {
+        "title": title,
+        "base_url": base_url,
+        "voice": voice,
+        "use_original_audio": False,
+        "summarize": summarize,
+    })
     return JSONResponse({"job_id": job_id})

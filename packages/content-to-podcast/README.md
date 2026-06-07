@@ -26,13 +26,58 @@ Second Brain 现在通过 `generate_podcast()` 调用这个包。后续优化这
 
 ## 当前边界
 
-当前版本已经把生成编排层封装成独立包，并提供 Python API 与命令行入口。底层能力仍默认复用 Second Brain 仓库已有模块：
+当前版本已经把生成编排层封装成独立包，并提供 Python API 与命令行入口。默认运行链路由以下能力组成：
 
-- `services.extractor`
+- `DouyinAdapter`：调用本机 Douyin Downloader 服务
+- `BilibiliAdapter`：调用本机 BBDown
+- `YouTubeAdapter`：继续使用 `yt-dlp`
+- `Faster-Whisper`：视频没有有效字幕时自动转录
+- `services.podcast_sources`：将平台结果统一为 `PreparedSource`
 - `services.llm`
 - `services.tts`
 
-这些依赖现在是延迟加载的：你可以单独 import `content_to_podcast`、查看类型、接入自定义 adapter，不会在 import 阶段因为找不到 `services.*` 失败。实际生成时，如果不传自定义 services，仍需要在 Second Brain 仓库环境内运行。
+这些依赖是延迟加载的：你可以单独 import `content_to_podcast`、查看类型、接入自定义 adapter，不会在 import 阶段因为找不到 `services.*` 失败。实际生成时，如果不传自定义 services，仍需要在 Second Brain 仓库环境内运行。
+
+## Mac 本地准备
+
+安装 BBDown、Douyin Downloader 与 Faster-Whisper：
+
+```bash
+bash scripts/setup_podcast_tools_macos.sh
+```
+
+生成抖音播客前，另开一个终端启动专用下载服务：
+
+```bash
+bash scripts/start_douyin_downloader.sh
+```
+
+B站公开内容默认无需 Cookie。遇到登录验证时，将浏览器 Cookie 字符串写入：
+
+```text
+data/cookies/bilibili.txt
+```
+
+抖音出现 `cookie_required` 或反爬验证时，获取并写入最新浏览器 Cookie：
+
+```bash
+bash scripts/capture_douyin_cookie.sh
+```
+
+登录完成后，重启 `scripts/start_douyin_downloader.sh`。
+
+视频转录默认使用 `small + CPU int8`，模型缓存位于 `data/models/`。可以通过 `.env` 调整：
+
+```env
+WHISPER_MODEL=small
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+WHISPER_HF_ENDPOINT=https://hf-mirror.com
+```
+
+需要忽略平台字幕并重新转录时，可在任务 API 中传入 `force_transcribe=true`，或在 CLI 中使用 `--force-transcribe`。
+
+生成任务会写入 SQLite `podcast_jobs` 队列，由单 worker 顺序执行。服务重启后，中断任务会自动回到等待队列。
 
 ## 命令行用法
 
@@ -64,7 +109,7 @@ content-to-podcast "https://www.douyin.com/video/xxxx" --type douyin --use-origi
 
 如果不传 `--type`，工具会自动识别 YouTube、抖音、B站、微信公众号和普通网页。
 
-注意：抖音短链可能会过期，或在没有登录/cookie 的环境下只跳转到抖音首页。遇到这种情况，需要换成有效作品页链接，或在本机浏览器登录后再试。
+注意：抖音短链可能会过期，或只跳转到抖音首页。遇到这种情况会返回 `expired_share_link`；需要重新复制有效作品链接。
 
 常用参数：
 

@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Literal
 
+from .source_adapters import PreparedSource
+
 SourceType = Literal["url", "youtube", "douyin", "bilibili", "wechat", "pdf", "txt"]
 StatusCallback = Callable[[str, str, dict | None], None]
 MAX_PAGES_AUDIO_BYTES = 24 * 1024 * 1024
@@ -29,6 +31,7 @@ class PodcastGenerationServices:
     polish_chunk: Callable[[str, int, int], str | None]
     generate_tags: Callable[[str, str], list[str]]
     chunk_threshold: int
+    prepare_source: Callable[[str, SourceType, StatusCallback | None, bool], PreparedSource] | None = None
 
 
 def load_default_services() -> PodcastGenerationServices:
@@ -49,6 +52,7 @@ def load_default_services() -> PodcastGenerationServices:
         polish_chunk,
     )
     from services.tts import generate_audio_sync
+    from services.podcast_sources import prepare_source
 
     return PodcastGenerationServices(
         extract_content=extract_content,
@@ -62,6 +66,7 @@ def load_default_services() -> PodcastGenerationServices:
         polish_chunk=polish_chunk,
         generate_tags=generate_tags,
         chunk_threshold=CHUNK_THRESHOLD,
+        prepare_source=prepare_source,
     )
 
 
@@ -74,6 +79,7 @@ class PodcastGenerationOptions:
     voice: str = "zh-CN-YunxiNeural"
     use_original_audio: bool = False
     summarize: bool = False
+    force_transcribe: bool = False
     scripts_dir: str = "static/scripts"
     transcripts_dir: str = "static/transcripts"
     audio_dir: str = "static/audio"
@@ -106,8 +112,10 @@ class PodcastGenerationResult:
     article_word_count: int
     article_summary: str
     image_url: str | None
+    transcript_source: str
     items: list[GeneratedPodcastItem]
     tags: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _notify(callback: StatusCallback | None, status: str, message: str, file: dict | None = None) -> None:
@@ -203,6 +211,27 @@ def save_script(title: str, script: str, scripts_dir: str, part_label: str = "")
     return _local_url(path)
 
 
+def publish_transcript_files(
+    paths: list[str],
+    transcripts_dir: str,
+    on_status: StatusCallback | None,
+) -> list[str]:
+    published: list[str] = []
+    os.makedirs(transcripts_dir, exist_ok=True)
+    for source in paths:
+        if not os.path.isfile(source):
+            continue
+        suffix = os.path.splitext(source)[1]
+        filename = f"{uuid.uuid4().hex}{suffix}"
+        target = os.path.join(transcripts_dir, filename)
+        shutil.copy2(source, target)
+        url = _local_url(target)
+        published.append(url)
+        label = "字幕文件" if suffix.lower() in {".srt", ".vtt"} else "转录文稿"
+        _notify(on_status, "processing", f"已保存{label}。", {"label": label, "url": url})
+    return published
+
+
 def _transcode_audio(input_path: str, output_path: str, bitrate: str) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
@@ -262,6 +291,15 @@ def normalize_audio_for_podcast(audio_filename: str, audio_dir: str) -> str:
     )
 
 
+def import_prepared_audio(media_path: str, audio_dir: str) -> str:
+    os.makedirs(audio_dir, exist_ok=True)
+    suffix = os.path.splitext(media_path)[1] or ".mp3"
+    filename = f"{uuid.uuid4().hex}{suffix}"
+    target = os.path.join(audio_dir, filename)
+    shutil.copy2(media_path, target)
+    return filename
+
+
 def _make_item(
     *,
     title: str,
@@ -317,17 +355,34 @@ def generate_podcast(
     source_url = options.source if options.source_type in ("url", "youtube", "douyin", "bilibili", "wechat") else None
 
     _notify(on_status, "extracting", "正在提取内容...")
+    prepared: PreparedSource | None = None
     try:
-        text, thumbnail_url = services.extract_content(options.source, options.source_type)
+        if services.prepare_source:
+            prepared = services.prepare_source(
+                options.source,
+                options.source_type,
+                on_status,
+                options.force_transcribe,
+            )
+            text = prepared.text
+            thumbnail_url = prepared.thumbnail_url
+            if options.source_type in ("url", "youtube", "douyin", "bilibili", "wechat"):
+                source_url = prepared.canonical_url or source_url
+        else:
+            text, thumbnail_url = services.extract_content(options.source, options.source_type)
     except Exception as exc:
+        if getattr(exc, "error_code", None):
+            raise
         raise ValueError(str(exc) or _extract_failure_message(options.source_type)) from exc
     if not text:
         raise ValueError(_extract_failure_message(options.source_type))
 
     title = options.title.strip()
     if not title:
-        _notify(on_status, "extracting", "正在生成标题...")
-        title = services.generate_title(text)
+        title = (prepared.title if prepared else "").strip()
+        if not title:
+            _notify(on_status, "extracting", "正在生成标题...")
+            title = services.generate_title(text)
 
     image_url = download_thumbnail(thumbnail_url, options.images_dir)
     transcript_url = save_transcript(
@@ -341,6 +396,8 @@ def generate_podcast(
         "label": "原始逐字稿",
         "url": transcript_url,
     })
+    if prepared and prepared.transcript_files:
+        publish_transcript_files(prepared.transcript_files, options.transcripts_dir, on_status)
 
     items: list[GeneratedPodcastItem] = []
     tags: list[str] = []
@@ -368,7 +425,11 @@ def generate_podcast(
             "label": script_label,
             "url": script_url,
         })
-        audio_filename = services.download_youtube_audio(options.source, options.audio_dir)
+        audio_filename = (
+            import_prepared_audio(prepared.media_path, options.audio_dir)
+            if prepared and prepared.media_path
+            else services.download_youtube_audio(options.source, options.audio_dir)
+        )
         if not audio_filename:
             raise RuntimeError("原始音频下载失败，请检查链接。")
         _notify(on_status, "generating_audio", "正在压缩音频为 96kbps mono...")
@@ -508,6 +569,8 @@ def generate_podcast(
         article_word_count=article_word_count,
         article_summary=article_summary,
         image_url=image_url,
+        transcript_source=prepared.transcript_source if prepared else "legacy",
         items=items,
         tags=tags,
+        warnings=prepared.warnings if prepared else [],
     )
