@@ -42,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="static", help="Output root directory")
     parser.add_argument("--use-original-audio", action="store_true", help="Use original YouTube audio instead of generated TTS")
     parser.add_argument("--summarize", action="store_true", help="Use concise summary mode instead of faithful transcript mode")
+    parser.add_argument("--force-transcribe", action="store_true", help="Ignore platform subtitles and run Faster-Whisper")
     parser.add_argument("--json", action="store_true", help="Print the full result as JSON")
     return parser
 
@@ -60,6 +61,7 @@ def main() -> int:
             voice=args.voice,
             use_original_audio=args.use_original_audio,
             summarize=args.summarize,
+            force_transcribe=args.force_transcribe,
             scripts_dir=str(output_root / "scripts"),
             transcripts_dir=str(output_root / "transcripts"),
             audio_dir=str(output_root / "audio"),
@@ -73,8 +75,10 @@ def main() -> int:
         "source_url": result.source_url,
         "source_type": result.source_type,
         "transcript_url": result.transcript_url,
+        "transcript_source": result.transcript_source,
         "image_url": result.image_url,
         "tags": result.tags,
+        "warnings": result.warnings,
         "items": [item.__dict__ for item in result.items],
     }
 

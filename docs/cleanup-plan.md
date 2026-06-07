@@ -27,14 +27,30 @@ This project is moving from a podcast/content tool toward an autonomous personal
   - Target: one inbox table with `source='rss'`, `feed_id`, `published_at`, and `relevance_score`.
   - Remove condition: RSS refresh writes directly to `inbox_items` and existing `feed_items` are migrated.
 
+- Optimize Inbox.
+  - Current state: Inbox has improved, but still needs a tighter review/save/read workflow.
+  - Target: make Inbox the primary intake surface for RSS, manual URLs, notes, todos, and podcast generation.
+  - Remove condition: a new item can be triaged, saved, dismissed, converted to podcast, and opened for reading without switching to legacy routes.
+
+## Bugs To Fix
+
+- Fix article highlighting after the first highlight.
+  - Current state: first highlight works, but the second highlight can appear to do nothing.
+  - Target: repeated highlights should reliably save, render in preview, and appear in notes without requiring a page refresh.
+  - Remove condition: selecting two different text ranges in one reading session creates two visible notes and persists both after refresh.
+
 ## Delete Or Move
 
 - Move one-off maintenance helpers out of `services/`.
   - Done: `services/importer.py` moved to `scripts/import_remote_rss.py`.
 
 - Keep generated artifacts out of feature reviews.
-  - `static/audio`, `static/transcripts`, `static/scripts`, `static/images`, `static/podcast.xml`, and `static/episodes.json` are generated/runtime artifacts.
-  - `brain/articles` and `brain/insights` need a tracking policy because they are product data, not app code.
+  - Done: `.gitignore` ignores generated/runtime assets in `static/audio`, generated Markdown under `static/scripts`, `static/transcripts`, `static/images`, `static/episodes.json`, `static/podcast.xml`, and local `brain/*` data.
+  - Exception: `static/scripts/chat-widget.js` remains tracked because it is application code used by templates.
+  - Confirmed impact: not committing newly generated files in these paths does not break existing code paths; it only means locally generated podcast media, remote thumbnail cache, RSS episode state, and GBrain content are not portable through Git.
+
+- Hide 大脑演化 from the main navigation.
+  - Done: the UI entry is hidden while keeping the evolution view, Agent task APIs, proposal APIs, and logs available for future admin/debug use.
 
 ## Do Not Delete Yet
 

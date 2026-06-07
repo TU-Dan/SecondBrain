@@ -828,7 +828,7 @@
                         document.getElementById('status-dot').className = 'status-dot done';
                         document.getElementById('progress-message').className = 'status-done-text';
                         setButtons(false);
-                    } else if (data.status === 'error') {
+                    } else if (data.status === 'error' || data.status === 'failed') {
                         clearInterval(pollTimer);
                         document.getElementById('progress-bar').className = 'progress-bar error';
                         document.getElementById('status-dot').className = 'status-dot error';
