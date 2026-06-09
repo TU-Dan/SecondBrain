@@ -51,6 +51,32 @@ For a real Douyin acceptance check, confirm:
 - The knowledge-base article exists and the Cloudflare RSS enclosure URL
   returns HTTP 200.
 
+For podcast task-management changes, confirm:
+
+- `/tasks` shows current queue order, task state, stage, events, and generated files.
+- Cancelling a pending task marks it `cancelled`; cancelling a running task
+  terminates its child process and allows the next pending task to start.
+- A stage that exceeds its configured timeout fails with `stage_timeout`
+  without blocking the queue.
+- Retrying a failed or cancelled task creates a new pending attempt linked to
+  the original job.
+
+For social-output prompt changes, confirm:
+
+- `format_type="wechat"` output reads like a thinking note, not a lecture.
+- The article keeps a clear personal observation, supporting source details,
+  a tentative judgment, and boundaries or uncertainty.
+- The title and first 120 Chinese characters surface a concrete object,
+  surprising fact, conflict, change, or cost drawn from the source.
+- Its appeal comes from the source's strongest material and core tension,
+  rather than vague reflection, anxiety, clickbait, or reader criticism.
+- The output contains a concise `【改稿诊断】` followed by a publishable
+  `【改后全文】`; the diagnosis explicitly selects one main tone, narrative
+  perspective, ending style, and restructuring direction.
+- It avoids scolding the reader, generic life advice, forced action lists,
+  hollow maxims, and phrases such as “你应该/你必须/真正厉害的人”.
+- `list` and `insight` formats are not unintentionally changed.
+
 ## Engineering Constraints
 
 - Preserve the existing Cloudflare RSS publishing flow through

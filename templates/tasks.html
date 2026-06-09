@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>播客任务中心</title>
+    <style>
+        :root {
+            --bg: #f3f5f1;
+            --panel: #ffffff;
+            --line: #dfe4dc;
+            --text: #1e261e;
+            --muted: #687268;
+            --accent: #41644a;
+            --danger: #a94848;
+            --warn: #9a6b26;
+            --radius: 8px;
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; color: var(--text); background: var(--bg); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+        button, select { font: inherit; }
+        .shell { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; }
+        header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
+        .sub { color: var(--muted); margin-top: 4px; }
+        .header-actions, .filters, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        a { color: var(--accent); text-decoration: none; }
+        button, select, .link-button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; min-height: 34px; padding: 6px 10px; cursor: pointer; }
+        button:hover, .link-button:hover { border-color: var(--accent); }
+        button.danger { color: var(--danger); }
+        .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+        .stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 13px 14px; }
+        .stat strong { display: block; font-size: 21px; }
+        .stat span { color: var(--muted); font-size: 12px; }
+        .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+        .task-list { display: grid; gap: 8px; }
+        .task { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+        .task-main { display: grid; grid-template-columns: 90px minmax(220px, 1fr) 150px 130px auto; gap: 14px; align-items: center; padding: 13px 14px; }
+        .source { font-weight: 650; text-transform: capitalize; }
+        .title { font-weight: 600; overflow-wrap: anywhere; }
+        .meta, .message { color: var(--muted); font-size: 12px; }
+        .badge { display: inline-flex; align-items: center; min-height: 24px; border-radius: 12px; padding: 2px 8px; background: #edf2ec; color: var(--accent); font-size: 12px; }
+        .badge.failed, .badge.cancelled { background: #f7eaea; color: var(--danger); }
+        .badge.running, .badge.cancelling { background: #f7f0df; color: var(--warn); }
+        .detail { display: none; border-top: 1px solid var(--line); padding: 14px; background: #fafbf9; }
+        .detail.open { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+        .section-title { margin: 0 0 8px; font-size: 13px; }
+        .events, .files { display: grid; gap: 7px; }
+        .event { border-left: 2px solid var(--line); padding-left: 9px; }
+        .empty { padding: 60px 20px; text-align: center; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+        @media (max-width: 850px) {
+            .stats { grid-template-columns: repeat(2, 1fr); }
+            .task-main { grid-template-columns: 70px 1fr; }
+            .task-main .actions { grid-column: 1 / -1; }
+            .detail.open { grid-template-columns: 1fr; }
+            header, .toolbar { align-items: flex-start; flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+<div class="shell">
+    <header>
+        <div>
+            <h1>播客任务中心</h1>
+            <div class="sub">查看队列、定位失败、取消卡住任务并继续执行。</div>
+        </div>
+        <div class="header-actions">
+            <a class="link-button" href="/generate">新建播客</a>
+            <a class="link-button" href="/">返回知识库</a>
+        </div>
+    </header>
+
+    <section class="stats" id="stats"></section>
+    <div class="toolbar">
+        <div class="filters">
+            <select id="status-filter" onchange="loadTasks()">
+                <option value="all">全部状态</option>
+                <option value="running">执行中</option>
+                <option value="pending">等待中</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option>
+                <option value="done">已完成</option>
+            </select>
+            <button onclick="loadTasks()">刷新</button>
+        </div>
+        <button class="danger" onclick="cleanupJobs()">清理 30 天前记录</button>
+    </div>
+    <main class="task-list" id="task-list"><div class="empty">正在加载任务...</div></main>
+</div>
+<script>
+const labels = {pending:'等待中',running:'执行中',cancelling:'取消中',cancelled:'已取消',failed:'失败',done:'已完成'};
+const stages = {pending:'等待执行',resolving:'解析来源',downloading:'下载媒体',transcribing:'语音转录',writing_script:'整理文稿',generating_audio:'生成音频',publishing:'发布 RSS',done:'完成',failed:'失败',cancelled:'已取消'};
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const elapsed = value => {
+    if (!value) return '—';
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+    if (seconds < 60) return `${seconds} 秒`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
+    return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分钟`;
+};
+
+async function request(url, options={}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok || data.ok === false) throw new Error(data.error || '操作失败');
+    return data;
+}
+async function loadTasks() {
+    try {
+        const filter = document.getElementById('status-filter').value;
+        const data = await request(`/api/podcast-jobs?status=${filter}&limit=100`);
+        const count = key => data.counts[key] || 0;
+        document.getElementById('stats').innerHTML = [
+            ['running','执行中'],['pending','等待中'],['failed','失败'],['cancelled','已取消'],['done','已完成']
+        ].map(([key,label]) => `<div class="stat"><strong>${count(key)}</strong><span>${label}</span></div>`).join('');
+        document.getElementById('task-list').innerHTML = data.jobs.length ? data.jobs.map(renderTask).join('') : '<div class="empty">没有符合条件的任务</div>';
+    } catch (error) {
+        document.getElementById('task-list').innerHTML = `<div class="empty">加载失败：${esc(error.message)}</div>`;
+    }
+}
+function renderTask(job) {
+    const title = job.result?.title || job.options?.title || job.source_url;
+    const queue = job.queue_position ? `队列第 ${job.queue_position} 位` : stages[job.stage] || job.stage;
+    const canCancel = ['pending','running'].includes(job.status);
+    const canRetry = ['failed','cancelled'].includes(job.status);
+    return `<article class="task" id="task-${job.id}">
+        <div class="task-main">
+            <div class="source">${esc(job.source_type)}</div>
+            <div><div class="title">${esc(title)}</div><div class="message">${esc(job.message || '')}</div></div>
+            <div><span class="badge ${esc(job.status)}">${labels[job.status] || esc(job.status)}</span><div class="meta">${esc(queue)}</div></div>
+            <div class="meta">${job.status === 'pending' ? '等待 ' : '运行 '}${elapsed(job.started_at || job.created_at)}</div>
+            <div class="actions">
+                <button onclick="toggleDetail('${job.id}')">详情</button>
+                ${canCancel ? `<button class="danger" onclick="cancelJob('${job.id}')">取消</button>` : ''}
+                ${canRetry ? `<button onclick="retryJob('${job.id}')">重试</button>` : ''}
+                ${job.error_code === 'rss_publish_failed' ? `<button onclick="retryPublish('${job.id}')">重试发布</button>` : ''}
+                ${!canCancel ? `<button class="danger" onclick="deleteJob('${job.id}')">删除</button>` : ''}
+            </div>
+        </div>
+        <div class="detail" id="detail-${job.id}"></div>
+    </article>`;
+}
+async function toggleDetail(id) {
+    const detail = document.getElementById(`detail-${id}`);
+    if (detail.classList.contains('open')) return detail.classList.remove('open');
+    const {job} = await request(`/api/podcast-jobs/${id}`);
+    const files = (job.files || []).map(file => `<a href="${esc(file.url)}" target="_blank">${esc(file.label)}</a>`).join('') || '<span class="meta">暂无文件</span>';
+    const events = (job.events || []).map(event => `<div class="event"><strong>${esc(stages[event.stage] || event.event_type)}</strong><div>${esc(event.message)}</div><div class="meta">${new Date(event.created_at).toLocaleString()}</div></div>`).join('') || '<span class="meta">暂无事件</span>';
+    detail.innerHTML = `<section><h3 class="section-title">任务信息</h3><div class="meta">${esc(job.source_url)}</div><p>${esc(job.error_message || job.message || '')}</p><div class="files">${files}</div></section><section><h3 class="section-title">执行时间线</h3><div class="events">${events}</div></section>`;
+    detail.classList.add('open');
+}
+async function cancelJob(id) { if (confirm('取消这个任务？')) { await request(`/api/podcast-jobs/${id}/cancel`, {method:'POST'}); loadTasks(); } }
+async function retryJob(id) { await request(`/api/podcast-jobs/${id}/retry`, {method:'POST'}); loadTasks(); }
+async function retryPublish(id) { await request(`/api/podcast-jobs/${id}/retry-publish`, {method:'POST'}); loadTasks(); }
+async function deleteJob(id) { if (confirm('只删除任务记录，不删除生成内容。继续？')) { await request(`/api/podcast-jobs/${id}`, {method:'DELETE'}); loadTasks(); } }
+async function cleanupJobs() { const data = await request('/api/podcast-jobs/cleanup', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({days:30})}); alert(`已清理 ${data.removed} 条记录`); loadTasks(); }
+loadTasks();
+setInterval(loadTasks, 5000);
+</script>
+</body>
+</html>

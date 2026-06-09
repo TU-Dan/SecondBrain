@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -209,6 +210,18 @@ class GeneratorPreparedSourceTests(unittest.TestCase):
 
 
 class PodcastJobPersistenceTests(unittest.TestCase):
+    def test_isolated_runner_can_import_content_to_podcast_package(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "services.podcast_job_runner", "missing-job"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
+
     def test_job_claim_and_recovery(self):
         original_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as tmp:
@@ -303,6 +316,138 @@ class PodcastJobPersistenceTests(unittest.TestCase):
                 self.assertEqual(saved["error_code"], "rss_publish_failed")
                 self.assertEqual(saved["result"]["title"], "已生成")
             finally:
+                db.DB_PATH = original_path
+
+    def test_job_management_tracks_queue_cancel_retry_and_events(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                first = db.create_podcast_job("https://example.com/one", "url", {"title": "one"})
+                second = db.create_podcast_job("https://example.com/two", "url", {"title": "two"})
+
+                listed = {job["id"]: job for job in db.list_podcast_jobs()}
+                self.assertEqual(listed[first]["queue_position"], 1)
+                self.assertEqual(listed[second]["queue_position"], 2)
+
+                self.assertTrue(db.request_podcast_job_cancel(first))
+                self.assertEqual(db.get_podcast_job(first)["status"], "cancelled")
+                self.assertEqual(db.list_podcast_jobs(status="pending")[0]["queue_position"], 1)
+                self.assertEqual(db.get_podcast_job_events(first)[-1]["event_type"], "cancelled")
+
+                retried = db.retry_podcast_job(first)
+                retry_job = db.get_podcast_job(retried)
+                self.assertEqual(retry_job["parent_job_id"], first)
+                self.assertEqual(retry_job["attempt_count"], 2)
+            finally:
+                db.DB_PATH = original_path
+
+    def test_restart_recovers_running_but_finishes_cancelling(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                running = db.create_podcast_job("https://example.com/running", "url", {})
+                cancelling = db.create_podcast_job("https://example.com/cancelling", "url", {})
+                db.claim_podcast_job(running)
+                db.claim_podcast_job(cancelling)
+                db.request_podcast_job_cancel(cancelling)
+
+                self.assertEqual(db.reset_running_podcast_jobs(), 1)
+                self.assertEqual(db.get_podcast_job(running)["status"], "pending")
+                self.assertEqual(db.get_podcast_job(cancelling)["status"], "cancelled")
+            finally:
+                db.DB_PATH = original_path
+
+    def test_isolated_worker_terminates_cancelled_job(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job("https://example.com", "url", {})
+                db.claim_podcast_job(job_id)
+                db.request_podcast_job_cancel(job_id)
+                process = Mock()
+                process.poll.side_effect = lambda: process.returncode
+                process.returncode = None
+
+                def terminate():
+                    process.returncode = -15
+
+                process.terminate.side_effect = terminate
+                with (
+                    patch.object(podcast_jobs.subprocess, "Popen", return_value=process),
+                    patch.object(podcast_jobs._stop_event, "wait", return_value=False),
+                ):
+                    result = podcast_jobs._run_isolated(job_id)
+
+                self.assertEqual(result["error_code"], "cancelled")
+                self.assertEqual(db.get_podcast_job(job_id)["status"], "cancelled")
+                process.terminate.assert_called_once()
+            finally:
+                podcast_jobs._active_process = None
+                podcast_jobs._active_job_id = None
+                db.DB_PATH = original_path
+
+    def test_isolated_worker_marks_process_start_failure(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job("https://example.com", "url", {})
+                db.claim_podcast_job(job_id)
+                with patch.object(
+                    podcast_jobs.subprocess,
+                    "Popen",
+                    side_effect=OSError("cannot spawn"),
+                ):
+                    result = podcast_jobs._run_isolated(job_id)
+
+                self.assertEqual(result["error_code"], "worker_start_failed")
+                saved = db.get_podcast_job(job_id)
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["error_code"], "worker_start_failed")
+            finally:
+                podcast_jobs._active_process = None
+                podcast_jobs._active_job_id = None
+                db.DB_PATH = original_path
+
+    def test_isolated_worker_terminates_timed_out_job(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job("https://example.com", "url", {})
+                db.claim_podcast_job(job_id)
+                process = Mock()
+                process.poll.side_effect = lambda: process.returncode
+                process.returncode = None
+
+                def terminate():
+                    process.returncode = -15
+
+                process.terminate.side_effect = terminate
+                with (
+                    patch.object(podcast_jobs.subprocess, "Popen", return_value=process),
+                    patch.object(podcast_jobs._stop_event, "wait", return_value=False),
+                    patch.object(podcast_jobs, "_seconds_since", return_value=999),
+                    patch.object(podcast_jobs, "_stage_timeout_seconds", return_value=1),
+                ):
+                    result = podcast_jobs._run_isolated(job_id)
+
+                self.assertEqual(result["error_code"], "stage_timeout")
+                saved = db.get_podcast_job(job_id)
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["error_code"], "stage_timeout")
+                process.terminate.assert_called_once()
+            finally:
+                podcast_jobs._active_process = None
+                podcast_jobs._active_job_id = None
                 db.DB_PATH = original_path
 
 

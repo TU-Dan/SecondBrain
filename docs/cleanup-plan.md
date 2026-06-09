@@ -39,6 +39,17 @@ This project is moving from a podcast/content tool toward an autonomous personal
   - Target: repeated highlights should reliably save, render in preview, and appear in notes without requiring a page refresh.
   - Remove condition: selecting two different text ranges in one reading session creates two visible notes and persists both after refresh.
 
+- Optimize highlight analysis so it does not interrupt article reading.
+  - Current state: the highlight-analysis block is expanded above the article, occupies most of the first viewport, shows long Agent output with raw Markdown syntax, and can overflow horizontally. The analysis currently competes with the source article instead of supporting it.
+  - Target: keep the article as the primary reading surface. Collapse or summarize highlight analysis by default, render Markdown correctly, constrain height and width, and let readers expand individual analyses on demand.
+  - Acceptance criteria:
+    - Opening an article shows meaningful source content in the first viewport.
+    - Highlight analysis is visually secondary and does not push the article far below the fold.
+    - Raw Markdown markers such as `###`, `**`, tables, and separators are rendered or removed.
+    - Long analysis wraps correctly without horizontal overflow.
+    - Readers can expand, collapse, and inspect one highlight analysis without expanding every analysis.
+  - Remove condition: an article with at least four analyzed highlights remains comfortable to read on desktop and mobile, with no raw Markdown or horizontal overflow.
+
 ## Delete Or Move
 
 - Move one-off maintenance helpers out of `services/`.

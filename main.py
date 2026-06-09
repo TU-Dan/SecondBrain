@@ -186,6 +186,11 @@ async def generate_page(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
 
 
+@app.get("/tasks", response_class=HTMLResponse)
+async def podcast_tasks_page(request: Request):
+    return templates.TemplateResponse(request=request, name="tasks.html")
+
+
 @app.get("/api/brief")
 async def api_brief():
     import random
@@ -927,6 +932,7 @@ async def api_inbox_item_to_podcast(item_id: str, request: Request, background_t
         "voice": "zh-CN-YunxiNeural",
         "use_original_audio": True,
         "summarize": False,
+        "inbox_item_id": item_id,
     })
     update_inbox_item(item_id, status="processing")
     return JSONResponse({"ok": True, "job_id": job_id})
@@ -1038,6 +1044,54 @@ async def retry_podcast_job_publish(job_id: str):
     from services import podcast_jobs
     result = await asyncio.to_thread(podcast_jobs.retry_publish, job_id)
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.get("/api/podcast-jobs")
+async def list_podcast_jobs(status: str = "all", limit: int = 100):
+    jobs = db.list_podcast_jobs(status=status, limit=min(max(limit, 1), 500))
+    counts = {}
+    for job in db.list_podcast_jobs(limit=500):
+        counts[job["status"]] = counts.get(job["status"], 0) + 1
+    return JSONResponse({"jobs": jobs, "counts": counts})
+
+
+@app.get("/api/podcast-jobs/{job_id}")
+async def get_podcast_job(job_id: str):
+    job = db.get_podcast_job(job_id)
+    if not job:
+        return JSONResponse({"ok": False, "error": "任务不存在"}, status_code=404)
+    job["events"] = db.get_podcast_job_events(job_id)
+    return JSONResponse({"ok": True, "job": job})
+
+
+@app.post("/api/podcast-jobs/{job_id}/cancel")
+async def cancel_podcast_job(job_id: str):
+    from services import podcast_jobs
+    result = podcast_jobs.cancel(job_id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.post("/api/podcast-jobs/{job_id}/retry")
+async def retry_podcast_job(job_id: str):
+    from services import podcast_jobs
+    result = podcast_jobs.retry(job_id)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
+@app.delete("/api/podcast-jobs/{job_id}")
+async def delete_podcast_job(job_id: str):
+    ok = db.delete_podcast_job(job_id)
+    return JSONResponse(
+        {"ok": ok, "error": None if ok else "运行中的任务不能删除"},
+        status_code=200 if ok else 400,
+    )
+
+
+@app.post("/api/podcast-jobs/cleanup")
+async def cleanup_podcast_jobs(request: Request):
+    body = await request.json()
+    removed = db.cleanup_podcast_jobs(int(body.get("days", 30)))
+    return JSONResponse({"ok": True, "removed": removed})
 
 
 @app.post("/generate/url")

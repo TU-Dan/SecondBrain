@@ -17,6 +17,8 @@ log = logging.getLogger("podcast_jobs")
 
 _worker_thread: threading.Thread | None = None
 _stop_event = threading.Event()
+_active_process: subprocess.Popen | None = None
+_active_job_id: str | None = None
 
 STAGE_MAP = {
     "extracting": "resolving",
@@ -26,6 +28,15 @@ STAGE_MAP = {
     "processing": "writing_script",
     "generating_audio": "generating_audio",
     "publishing": "publishing",
+}
+
+DEFAULT_STAGE_TIMEOUTS = {
+    "resolving": 3 * 60,
+    "downloading": 30 * 60,
+    "transcribing": 90 * 60,
+    "writing_script": 30 * 60,
+    "generating_audio": 30 * 60,
+    "publishing": 15 * 60,
 }
 
 
@@ -49,12 +60,26 @@ def start() -> None:
 
 def stop() -> None:
     _stop_event.set()
+    _terminate_active_process()
     if _worker_thread and _worker_thread.is_alive():
         _worker_thread.join(timeout=5)
 
 
 def enqueue(source_url: str, source_type: str, options: dict) -> str:
     return db.create_podcast_job(source_url, source_type, options)
+
+
+def cancel(job_id: str) -> dict:
+    if not db.request_podcast_job_cancel(job_id):
+        return {"ok": False, "error": "任务不存在、已结束或无法取消"}
+    return {"ok": True, "job": db.get_podcast_job(job_id)}
+
+
+def retry(job_id: str) -> dict:
+    new_job_id = db.retry_podcast_job(job_id)
+    if not new_job_id:
+        return {"ok": False, "error": "只有失败或已取消的任务可以重试"}
+    return {"ok": True, "job_id": new_job_id, "job": db.get_podcast_job(new_job_id)}
 
 
 def run_next() -> dict | None:
@@ -83,12 +108,137 @@ def retry_publish(job_id: str) -> dict:
 def _worker_loop() -> None:
     while not _stop_event.is_set():
         try:
-            result = run_next()
-            if not result:
+            job = db.get_next_podcast_job()
+            if job and db.claim_podcast_job(job["id"]):
+                _run_isolated(job["id"])
+            else:
                 _stop_event.wait(1)
         except Exception:
             log.exception("podcast worker loop failed")
             _stop_event.wait(2)
+
+
+def _run_isolated(job_id: str) -> dict:
+    global _active_process, _active_job_id
+    _active_job_id = job_id
+    try:
+        _active_process = subprocess.Popen(
+            [sys.executable, "-m", "services.podcast_job_runner", job_id],
+            cwd=os.getcwd(),
+        )
+    except Exception as exc:
+        message = f"无法启动任务子进程：{exc}"
+        db.update_podcast_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message=message,
+            error_code="worker_start_failed",
+            error_message=message,
+            finished_at=_now(),
+        )
+        db.add_podcast_job_event(job_id, "failed", "failed", message)
+        _active_job_id = None
+        return {"ok": False, "job_id": job_id, "error_code": "worker_start_failed"}
+    try:
+        while _active_process.poll() is None:
+            if _stop_event.wait(1):
+                _terminate_active_process()
+                return {"ok": False, "job_id": job_id, "error": "worker stopped"}
+            job = db.get_podcast_job(job_id)
+            if not job:
+                _terminate_active_process()
+                return {"ok": False, "job_id": job_id, "error": "job deleted"}
+            if job["status"] == "cancelling":
+                _terminate_active_process()
+                _mark_cancelled(job_id)
+                return {"ok": False, "job_id": job_id, "error_code": "cancelled"}
+            timeout_seconds = _stage_timeout_seconds(job.get("stage") or "resolving")
+            elapsed = _seconds_since(job.get("updated_at"))
+            if timeout_seconds and elapsed > timeout_seconds:
+                _terminate_active_process()
+                _mark_timed_out(job_id, job.get("stage") or "unknown", timeout_seconds)
+                return {"ok": False, "job_id": job_id, "error_code": "stage_timeout"}
+
+        job = db.get_podcast_job(job_id)
+        if _active_process.returncode and job and job["status"] == "running":
+            message = f"任务子进程异常退出，退出码 {_active_process.returncode}。"
+            db.update_podcast_job(
+                job_id,
+                status="failed",
+                stage="failed",
+                message=message,
+                error_code="worker_process_failed",
+                error_message=message,
+                finished_at=_now(),
+            )
+            db.add_podcast_job_event(job_id, "failed", "failed", message)
+        return {"ok": bool(job and job["status"] == "done"), "job_id": job_id}
+    finally:
+        _active_process = None
+        _active_job_id = None
+
+
+def _terminate_active_process() -> None:
+    global _active_process
+    process = _active_process
+    if not process or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _stage_timeout_seconds(stage: str) -> int:
+    env_name = f"PODCAST_TIMEOUT_{stage.upper()}_SECONDS"
+    try:
+        return max(0, int(os.getenv(env_name, DEFAULT_STAGE_TIMEOUTS.get(stage, 30 * 60))))
+    except ValueError:
+        log.warning("invalid %s; using default timeout", env_name)
+        return DEFAULT_STAGE_TIMEOUTS.get(stage, 30 * 60)
+
+
+def _seconds_since(timestamp: str | None) -> float:
+    if not timestamp:
+        return 0
+    try:
+        value = datetime.fromisoformat(timestamp)
+        return max(0, (datetime.now(timezone.utc) - value).total_seconds())
+    except Exception:
+        return 0
+
+
+def _mark_cancelled(job_id: str) -> None:
+    db.update_podcast_job(
+        job_id,
+        status="cancelled",
+        stage="cancelled",
+        message="任务已取消。",
+        error_code="cancelled",
+        error_message="任务由用户取消。",
+        finished_at=_now(),
+    )
+    db.add_podcast_job_event(job_id, "cancelled", "cancelled", "任务已取消。")
+    _sync_inbox_status(job_id, "pending")
+
+
+def _mark_timed_out(job_id: str, stage: str, timeout_seconds: int) -> None:
+    message = f"任务在 {stage} 阶段超过 {timeout_seconds // 60} 分钟，已自动终止。"
+    db.update_podcast_job(
+        job_id,
+        status="failed",
+        stage=stage,
+        message=message,
+        error_code="stage_timeout",
+        error_message=message,
+        timeout_at=_now(),
+        finished_at=_now(),
+    )
+    db.add_podcast_job_event(job_id, "timeout", stage, message)
+    _sync_inbox_status(job_id, "pending")
 
 
 def _run(job_id: str) -> dict:
@@ -98,11 +248,16 @@ def _run(job_id: str) -> dict:
     options = job.get("options") or {}
 
     def on_status(status: str, message: str, file: dict | None = None):
+        previous = db.get_podcast_job(job_id)
+        stage = STAGE_MAP.get(status, status)
         db.update_podcast_job(
             job_id,
-            stage=STAGE_MAP.get(status, status),
+            stage=stage,
             message=message,
+            heartbeat_at=_now(),
         )
+        if not previous or previous.get("stage") != stage or previous.get("message") != message:
+            db.add_podcast_job_event(job_id, "progress", stage, message)
         if file:
             db.append_podcast_job_file(job_id, file)
 
@@ -157,6 +312,7 @@ def _run(job_id: str) -> dict:
             "items": [item.__dict__ for item in result.items],
         }
         _publish(job_id, result_payload)
+        _sync_inbox_status(job_id, "done")
         return {"ok": True, "job_id": job_id, "result": result_payload}
     except Exception as exc:
         error_code = getattr(exc, "error_code", None) or _infer_error_code(str(exc))
@@ -169,6 +325,8 @@ def _run(job_id: str) -> dict:
             error_message=str(exc),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
+        db.add_podcast_job_event(job_id, "failed", "failed", str(exc), {"error_code": error_code})
+        _sync_inbox_status(job_id, "pending")
         log.exception("podcast job failed: %s", job_id)
         return {"ok": False, "job_id": job_id, "error_code": error_code, "error": str(exc)}
     finally:
@@ -191,9 +349,16 @@ def _publish(job_id: str, result_payload: dict) -> None:
             result_json=json.dumps(result_payload, ensure_ascii=False),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
+        db.add_podcast_job_event(job_id, "completed", "done", "内容生成完成。")
         return
 
-    db.update_podcast_job(job_id, stage="publishing", message="内容生成完成，正在发布到 RSS...")
+    db.update_podcast_job(
+        job_id,
+        stage="publishing",
+        message="内容生成完成，正在发布到 RSS...",
+        heartbeat_at=_now(),
+    )
+    db.add_podcast_job_event(job_id, "progress", "publishing", "内容生成完成，正在发布到 RSS...")
     try:
         publish = subprocess.run(
             [sys.executable, "scripts/publish_to_pages.py"],
@@ -213,6 +378,7 @@ def _publish(job_id: str, result_payload: dict) -> None:
             result_json=json.dumps(result_payload, ensure_ascii=False),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
+        db.add_podcast_job_event(job_id, "completed", "done", "全部完成，已发布到 RSS。")
     except Exception as exc:
         result_payload["publish_error"] = str(exc)
         db.update_podcast_job(
@@ -225,6 +391,7 @@ def _publish(job_id: str, result_payload: dict) -> None:
             error_message=str(exc),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
+        db.add_podcast_job_event(job_id, "failed", "publishing", str(exc), {"error_code": "rss_publish_failed"})
 
 
 def _remember(article_id: str) -> None:
@@ -247,3 +414,14 @@ def _infer_error_code(message: str) -> str:
     if "字幕" in message:
         return "subtitle_unavailable"
     return "platform_download_failed"
+
+
+def _sync_inbox_status(job_id: str, status: str) -> None:
+    job = db.get_podcast_job(job_id)
+    inbox_item_id = (job.get("options") or {}).get("inbox_item_id") if job else None
+    if inbox_item_id:
+        db.update_inbox_item(inbox_item_id, status=status)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()

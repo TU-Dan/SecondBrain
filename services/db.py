@@ -110,6 +110,32 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_podcast_jobs_status_created
             ON podcast_jobs(status, created_at)
         """)
+        _ensure_columns(
+            conn,
+            "podcast_jobs",
+            {
+                "attempt_count": "INTEGER DEFAULT 1",
+                "parent_job_id": "TEXT",
+                "heartbeat_at": "TEXT",
+                "cancel_requested_at": "TEXT",
+                "timeout_at": "TEXT",
+            },
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS podcast_job_events (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                stage TEXT,
+                message TEXT,
+                data_json TEXT DEFAULT '{}',
+                created_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_podcast_job_events_job_created
+            ON podcast_job_events(job_id, created_at)
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS highlights (
                 id TEXT PRIMARY KEY,
@@ -633,15 +659,22 @@ def delete_inbox_item(item_id: str) -> bool:
 
 # ── Podcast jobs ─────────────────────────────────────────────────────────────
 
-def create_podcast_job(source_url: str, source_type: str, options: dict = None) -> str:
+def create_podcast_job(
+    source_url: str,
+    source_type: str,
+    options: dict = None,
+    *,
+    parent_job_id: str | None = None,
+    attempt_count: int = 1,
+) -> str:
     job_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO podcast_jobs
                (id, source_url, source_type, options_json, status, stage, message,
-                files_json, result_json, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                files_json, result_json, attempt_count, parent_job_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 job_id,
                 source_url,
@@ -652,11 +685,14 @@ def create_podcast_job(source_url: str, source_type: str, options: dict = None) 
                 "任务已提交，等待处理...",
                 "[]",
                 "{}",
+                attempt_count,
+                parent_job_id,
                 now,
                 now,
             ),
         )
         conn.commit()
+    add_podcast_job_event(job_id, "created", "pending", "任务已提交，等待处理。")
     return job_id
 
 
@@ -664,6 +700,76 @@ def get_podcast_job(job_id: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM podcast_jobs WHERE id=?", (job_id,)).fetchone()
     return _decode_podcast_job(row)
+
+
+def list_podcast_jobs(status: str | None = None, limit: int = 100) -> list[dict]:
+    query = "SELECT * FROM podcast_jobs"
+    params: list = []
+    if status and status != "all":
+        query += " WHERE status=?"
+        params.append(status)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    with get_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+        pending_ids = [
+            row["id"]
+            for row in conn.execute(
+                "SELECT id FROM podcast_jobs WHERE status='pending' ORDER BY created_at ASC"
+            ).fetchall()
+        ]
+    positions = {job_id: index + 1 for index, job_id in enumerate(pending_ids)}
+    jobs = []
+    for row in rows:
+        job = _decode_podcast_job(row)
+        job["queue_position"] = positions.get(job["id"])
+        jobs.append(job)
+    return jobs
+
+
+def get_podcast_job_events(job_id: str, limit: int = 200) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM podcast_job_events
+               WHERE job_id=? ORDER BY created_at ASC LIMIT ?""",
+            (job_id, limit),
+        ).fetchall()
+    events = []
+    for row in rows:
+        event = dict(row)
+        try:
+            event["data"] = json.loads(event.get("data_json") or "{}")
+        except Exception:
+            event["data"] = {}
+        events.append(event)
+    return events
+
+
+def add_podcast_job_event(
+    job_id: str,
+    event_type: str,
+    stage: str | None,
+    message: str,
+    data: dict | None = None,
+) -> str:
+    event_id = uuid.uuid4().hex
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO podcast_job_events
+               (id, job_id, event_type, stage, message, data_json, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                event_id,
+                job_id,
+                event_type,
+                stage,
+                message,
+                json.dumps(data or {}, ensure_ascii=False),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    return event_id
 
 
 def get_next_podcast_job() -> dict | None:
@@ -683,18 +789,24 @@ def claim_podcast_job(job_id: str) -> bool:
         cur = conn.execute(
             """UPDATE podcast_jobs
                SET status='running', stage='resolving', started_at=?, updated_at=?,
+                   heartbeat_at=?, cancel_requested_at=NULL, timeout_at=NULL,
                    error_code=NULL, error_message=NULL
                WHERE id=? AND status='pending'""",
-            (now, now, job_id),
+            (now, now, now, job_id),
         )
         conn.commit()
-    return cur.rowcount > 0
+    claimed = cur.rowcount > 0
+    if claimed:
+        add_podcast_job_event(job_id, "started", "resolving", "任务开始执行。")
+    return claimed
 
 
 def update_podcast_job(job_id: str, **fields) -> None:
     allowed = {
         "status", "stage", "message", "files_json", "result_json",
         "error_code", "error_message", "started_at", "finished_at",
+        "attempt_count", "parent_job_id", "heartbeat_at",
+        "cancel_requested_at", "timeout_at",
     }
     updates = {key: value for key, value in fields.items() if key in allowed}
     if not updates:
@@ -714,21 +826,123 @@ def append_podcast_job_file(job_id: str, file: dict) -> None:
     files = job.get("files") or []
     files.append(file)
     update_podcast_job(job_id, files_json=json.dumps(files, ensure_ascii=False))
+    add_podcast_job_event(job_id, "file", job.get("stage"), file.get("label", "生成文件"), file)
+
+
+def request_podcast_job_cancel(job_id: str) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        job = conn.execute(
+            "SELECT status, options_json FROM podcast_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if not job or job["status"] not in {"pending", "running"}:
+            return False
+        cur = conn.execute(
+            """UPDATE podcast_jobs
+               SET status=CASE WHEN status='pending' THEN 'cancelled' ELSE 'cancelling' END,
+                   stage=CASE WHEN status='pending' THEN 'cancelled' ELSE stage END,
+                   message=CASE WHEN status='pending' THEN '任务已取消。' ELSE '正在取消任务...' END,
+                   cancel_requested_at=?, finished_at=CASE WHEN status='pending' THEN ? ELSE finished_at END,
+                   updated_at=?
+               WHERE id=? AND status IN ('pending','running')""",
+            (now, now, now, job_id),
+        )
+        conn.commit()
+    if cur.rowcount:
+        if job["status"] == "pending":
+            add_podcast_job_event(job_id, "cancelled", "cancelled", "任务已取消。")
+            try:
+                inbox_item_id = json.loads(job["options_json"] or "{}").get("inbox_item_id")
+            except Exception:
+                inbox_item_id = None
+            if inbox_item_id:
+                update_inbox_item(inbox_item_id, status="pending")
+        else:
+            add_podcast_job_event(job_id, "cancel_requested", None, "已请求取消任务。")
+    return cur.rowcount > 0
+
+
+def retry_podcast_job(job_id: str) -> str | None:
+    job = get_podcast_job(job_id)
+    if not job or job["status"] not in {"failed", "cancelled"}:
+        return None
+    return create_podcast_job(
+        job["source_url"],
+        job["source_type"],
+        job.get("options") or {},
+        parent_job_id=job_id,
+        attempt_count=int(job.get("attempt_count") or 1) + 1,
+    )
+
+
+def delete_podcast_job(job_id: str) -> bool:
+    with get_conn() as conn:
+        job = conn.execute("SELECT status FROM podcast_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job or job["status"] in {"running", "cancelling"}:
+            return False
+        conn.execute("DELETE FROM podcast_job_events WHERE job_id=?", (job_id,))
+        cur = conn.execute("DELETE FROM podcast_jobs WHERE id=?", (job_id,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def cleanup_podcast_jobs(days: int = 30) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    with get_conn() as conn:
+        ids = [
+            row["id"]
+            for row in conn.execute(
+                """SELECT id FROM podcast_jobs
+                   WHERE status IN ('done','failed','cancelled') AND updated_at < ?""",
+                (cutoff,),
+            ).fetchall()
+        ]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(f"DELETE FROM podcast_job_events WHERE job_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM podcast_jobs WHERE id IN ({placeholders})", ids)
+        conn.commit()
+    return len(ids)
 
 
 def reset_running_podcast_jobs() -> int:
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
-        cur = conn.execute(
+        running = conn.execute(
             """UPDATE podcast_jobs
                SET status='pending', stage='pending',
                    message='服务已重启，任务已重新放回队列。',
-                   started_at=NULL, updated_at=?
+                   started_at=NULL, heartbeat_at=NULL, cancel_requested_at=NULL, updated_at=?
                WHERE status='running'""",
             (now,),
         )
+        cancelling_jobs = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT id, options_json FROM podcast_jobs WHERE status='cancelling'"
+            ).fetchall()
+        ]
+        conn.execute(
+            """UPDATE podcast_jobs
+               SET status='cancelled', stage='cancelled', message='任务已取消。',
+                   error_code='cancelled', error_message='任务由用户取消。',
+                   finished_at=?, heartbeat_at=NULL, updated_at=?
+               WHERE status='cancelling'""",
+            (now, now),
+        )
         conn.commit()
-    return cur.rowcount
+    for job in cancelling_jobs:
+        job_id = job["id"]
+        add_podcast_job_event(job_id, "cancelled", "cancelled", "服务重启后完成取消。")
+        try:
+            inbox_item_id = json.loads(job["options_json"] or "{}").get("inbox_item_id")
+        except Exception:
+            inbox_item_id = None
+        if inbox_item_id:
+            update_inbox_item(inbox_item_id, status="pending")
+    return running.rowcount
 
 
 def _decode_podcast_job(row: sqlite3.Row | None) -> dict | None:
