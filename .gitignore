@@ -5,6 +5,7 @@ data/
 .env
 .claude/settings.local.json
 temp_uploads/
+.pages-publish-workdir/
 tools/BBDown/
 tools/douyin-downloader/
 
