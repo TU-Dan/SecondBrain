@@ -1,161 +1,40 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>播客任务中心</title>
-    <style>
-        :root {
-            --bg: #f3f5f1;
-            --panel: #ffffff;
-            --line: #dfe4dc;
-            --text: #1e261e;
-            --muted: #687268;
-            --accent: #41644a;
-            --danger: #a94848;
-            --warn: #9a6b26;
-            --radius: 8px;
-        }
-        * { box-sizing: border-box; }
-        body { margin: 0; color: var(--text); background: var(--bg); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
-        button, select { font: inherit; }
-        .shell { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; }
-        header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-        h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
-        .sub { color: var(--muted); margin-top: 4px; }
-        .header-actions, .filters, .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        a { color: var(--accent); text-decoration: none; }
-        button, select, .link-button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 6px; min-height: 34px; padding: 6px 10px; cursor: pointer; }
-        button:hover, .link-button:hover { border-color: var(--accent); }
-        button.danger { color: var(--danger); }
-        .stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
-        .stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 13px 14px; }
-        .stat strong { display: block; font-size: 21px; }
-        .stat span { color: var(--muted); font-size: 12px; }
-        .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-        .task-list { display: grid; gap: 8px; }
-        .task { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-        .task-main { display: grid; grid-template-columns: 90px minmax(220px, 1fr) 150px 130px auto; gap: 14px; align-items: center; padding: 13px 14px; }
-        .source { font-weight: 650; text-transform: capitalize; }
-        .title { font-weight: 600; overflow-wrap: anywhere; }
-        .meta, .message { color: var(--muted); font-size: 12px; }
-        .badge { display: inline-flex; align-items: center; min-height: 24px; border-radius: 12px; padding: 2px 8px; background: #edf2ec; color: var(--accent); font-size: 12px; }
-        .badge.failed, .badge.cancelled { background: #f7eaea; color: var(--danger); }
-        .badge.running, .badge.cancelling { background: #f7f0df; color: var(--warn); }
-        .detail { display: none; border-top: 1px solid var(--line); padding: 14px; background: #fafbf9; }
-        .detail.open { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-        .section-title { margin: 0 0 8px; font-size: 13px; }
-        .events, .files { display: grid; gap: 7px; }
-        .event { border-left: 2px solid var(--line); padding-left: 9px; }
-        .empty { padding: 60px 20px; text-align: center; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
-        @media (max-width: 850px) {
-            .stats { grid-template-columns: repeat(2, 1fr); }
-            .task-main { grid-template-columns: 70px 1fr; }
-            .task-main .actions { grid-column: 1 / -1; }
-            .detail.open { grid-template-columns: 1fr; }
-            header, .toolbar { align-items: flex-start; flex-direction: column; }
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>播客任务中心</title>
+<style>
+:root{--bg:#f3f5f0;--panel:rgba(255,255,255,.88);--line:#dfe5dc;--line2:#cbd5c8;--text:#18251d;--muted:#69756d;--soft:#edf2eb;--accent:#2f6b4f;--deep:#183d2c;--accent-soft:#e5efe8;--danger:#b54e49;--danger-soft:#faecea;--warn:#9a6a25;--warn-soft:#f8efdc;--shadow:0 12px 36px rgba(28,49,36,.07);--radius:18px}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;color:var(--text);background:radial-gradient(circle at 8% 0%,rgba(103,145,115,.11),transparent 28rem),linear-gradient(180deg,#f8faf6 0,var(--bg) 36rem);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}button,select{font:inherit}.shell{max-width:1320px;margin:0 auto;padding:42px 28px 72px}.page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:28px}.eyebrow{color:var(--accent);font-size:11px;font-weight:750;letter-spacing:.14em;text-transform:uppercase}h1{margin:5px 0 0;font-size:clamp(28px,3vw,42px);line-height:1.12;letter-spacing:-.035em}.sub{max-width:620px;color:var(--muted);margin-top:10px;font-size:15px}.header-actions,.filters,.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}a{color:var(--accent);text-decoration:none}button,select,.link-button{border:1px solid var(--line2);background:rgba(255,255,255,.76);color:var(--text);border-radius:11px;min-height:38px;padding:8px 13px;cursor:pointer;transition:.16s ease}.link-button{display:inline-flex;align-items:center;justify-content:center;font-weight:650}button:hover,.link-button:hover{border-color:#9caf9f;background:#fff}button:active,.link-button:active{transform:translateY(1px)}button:focus-visible,select:focus-visible,.link-button:focus-visible{outline:3px solid rgba(47,107,79,.18);outline-offset:2px}.link-button.primary{border-color:var(--deep);background:var(--deep);color:#fff}.link-button.primary:hover{background:#24543e}button.danger{color:var(--danger)}button.danger:hover{border-color:#e4b6b2;background:var(--danger-soft)}
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:16px}.stat{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:74px;padding:14px 16px;text-align:left;background:var(--panel);border-color:var(--line);border-radius:15px;box-shadow:0 5px 20px rgba(28,49,36,.035)}.stat:hover{transform:translateY(-1px);box-shadow:var(--shadow)}.stat.active{border-color:#83a58f;background:var(--accent-soft)}.stat span{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:13px;font-weight:600}.stat strong{font-size:25px;line-height:1;letter-spacing:-.04em}.stat-mark{width:8px;height:8px;border-radius:50%;background:#9dab9f}.stat[data-status=running] .stat-mark{background:#d49a3b;box-shadow:0 0 0 5px var(--warn-soft)}.stat[data-status=failed] .stat-mark{background:var(--danger);box-shadow:0 0 0 5px var(--danger-soft)}.stat[data-status=done] .stat-mark{background:var(--accent);box-shadow:0 0 0 5px var(--accent-soft)}
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:14px;padding:10px;background:rgba(255,255,255,.62);border:1px solid var(--line);border-radius:14px;backdrop-filter:blur(16px)}.refresh-note{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12px;padding:0 4px}.refresh-note:before{content:"";width:6px;height:6px;border-radius:50%;background:#70a181}.task-list{display:grid;gap:11px}.task{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 7px 24px rgba(28,49,36,.045);transition:.18s ease}.task:before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:#aab5ab}.task.status-running:before,.task.status-cancelling:before{background:#d59b3e}.task.status-failed:before{background:var(--danger)}.task.status-done:before{background:var(--accent)}.task:has(.detail.open){border-color:#a9bdac;box-shadow:var(--shadow)}.task-main{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:28px;align-items:center;padding:19px 20px 18px 22px}.task-copy{min-width:0}.task-eyebrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:8px}.source-chip{color:var(--deep);background:var(--soft);border-radius:999px;padding:3px 9px;font-size:11px;font-weight:750;letter-spacing:.035em;text-transform:uppercase}.badge{display:inline-flex;align-items:center;gap:6px;min-height:24px;border-radius:999px;padding:2px 9px;background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:700}.badge:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}.badge.failed,.badge.cancelled{background:var(--danger-soft);color:var(--danger)}.badge.running,.badge.cancelling{background:var(--warn-soft);color:var(--warn)}.badge.pending{background:#eef0ed;color:#687169}.badge.running:before{animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.35;transform:scale(.75)}}.stage-label{color:var(--muted);font-size:12px}.title{max-width:900px;font-size:16px;font-weight:720;line-height:1.38;letter-spacing:-.01em;overflow-wrap:anywhere}.message{max-width:940px;margin-top:5px;color:var(--muted);font-size:13px;overflow-wrap:anywhere}.progress-track{height:3px;margin-top:13px;overflow:hidden;border-radius:999px;background:#e9ede7}.progress-value{height:100%;border-radius:inherit;background:linear-gradient(90deg,#c18b32,#e1b967);transition:width .35s ease}.task-side{display:flex;align-items:center;justify-content:flex-end;gap:18px}.timing{min-width:100px;text-align:right}.timing span{display:block;color:var(--muted);font-size:11px}.timing strong{display:block;margin-top:2px;font-size:13px;font-weight:650;white-space:nowrap}.actions{justify-content:flex-end}.actions button{min-height:36px;padding-inline:12px;font-weight:620}.detail-trigger{min-width:72px}.detail-trigger.active{border-color:#a1b5a6;background:var(--accent-soft);color:var(--deep)}
+.detail{display:none;border-top:1px solid var(--line);background:rgba(246,248,244,.86)}.detail.open{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:22px;padding:20px 22px 23px}.detail-panel{min-width:0;padding:17px;background:rgba(255,255,255,.74);border:1px solid var(--line);border-radius:14px}.section-title{margin:0 0 13px;font-size:13px}.info-grid{display:grid;grid-template-columns:82px minmax(0,1fr);gap:8px 12px;margin:0}.info-grid dt{color:var(--muted);font-size:12px}.info-grid dd{min-width:0;margin:0;font-size:12px;overflow-wrap:anywhere}.info-grid a{text-decoration:underline;text-decoration-color:#b8c9bc;text-underline-offset:3px}.detail-message{margin:15px 0 0;padding:11px 12px;border-radius:10px;background:var(--soft);color:#47544b;font-size:12px;overflow-wrap:anywhere}.files{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}.file-link{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:9px;padding:6px 9px;background:#fff;font-size:12px;font-weight:620}.events{display:grid;gap:0}.event{position:relative;padding:0 0 15px 20px}.event:not(:last-child):before{content:"";position:absolute;left:5px;top:12px;bottom:-2px;width:1px;background:var(--line2)}.event:after{content:"";position:absolute;left:1px;top:5px;width:9px;height:9px;border:2px solid #90a294;background:#fff;border-radius:50%}.event strong{font-size:12px}.event-message{margin-top:2px;color:#4e5a52;font-size:12px}.meta{color:var(--muted);font-size:11px}.empty{padding:72px 20px;text-align:center;color:var(--muted);background:var(--panel);border:1px dashed var(--line2);border-radius:var(--radius)}.detail-loading{grid-column:1/-1;padding:10px;color:var(--muted);text-align:center}
+@media(max-width:920px){.stats{grid-template-columns:repeat(3,1fr)}.task-main{grid-template-columns:1fr;gap:15px}.task-side{justify-content:space-between}.timing{text-align:left}.detail.open{grid-template-columns:1fr}}@media(max-width:640px){.shell{padding:24px 14px 52px}.page-header,.toolbar{align-items:stretch;flex-direction:column}.header-actions .link-button{flex:1}.stats{grid-template-columns:repeat(2,1fr)}.stat{min-height:62px;padding:11px 13px}.task-main{padding:17px 15px 16px 18px}.task-side{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:flex-start}.detail.open{padding:14px}.detail-panel{padding:14px}.refresh-note{display:none}}
+</style>
 </head>
-<body>
-<div class="shell">
-    <header>
-        <div>
-            <h1>播客任务中心</h1>
-            <div class="sub">查看队列、定位失败、取消卡住任务并继续执行。</div>
-        </div>
-        <div class="header-actions">
-            <a class="link-button" href="/generate">新建播客</a>
-            <a class="link-button" href="/">返回知识库</a>
-        </div>
-    </header>
-
-    <section class="stats" id="stats"></section>
-    <div class="toolbar">
-        <div class="filters">
-            <select id="status-filter" onchange="loadTasks()">
-                <option value="all">全部状态</option>
-                <option value="running">执行中</option>
-                <option value="pending">等待中</option>
-                <option value="failed">失败</option>
-                <option value="cancelled">已取消</option>
-                <option value="done">已完成</option>
-            </select>
-            <button onclick="loadTasks()">刷新</button>
-        </div>
-        <button class="danger" onclick="cleanupJobs()">清理 30 天前记录</button>
-    </div>
-    <main class="task-list" id="task-list"><div class="empty">正在加载任务...</div></main>
-</div>
-<script>
-const labels = {pending:'等待中',running:'执行中',cancelling:'取消中',cancelled:'已取消',failed:'失败',done:'已完成'};
-const stages = {pending:'等待执行',resolving:'解析来源',downloading:'下载媒体',transcribing:'语音转录',writing_script:'整理文稿',generating_audio:'生成音频',publishing:'发布 RSS',done:'完成',failed:'失败',cancelled:'已取消'};
-const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-const elapsed = value => {
-    if (!value) return '—';
-    const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
-    if (seconds < 60) return `${seconds} 秒`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟`;
-    return `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分钟`;
-};
-
-async function request(url, options={}) {
-    const response = await fetch(url, options);
-    const data = await response.json();
-    if (!response.ok || data.ok === false) throw new Error(data.error || '操作失败');
-    return data;
-}
-async function loadTasks() {
-    try {
-        const filter = document.getElementById('status-filter').value;
-        const data = await request(`/api/podcast-jobs?status=${filter}&limit=100`);
-        const count = key => data.counts[key] || 0;
-        document.getElementById('stats').innerHTML = [
-            ['running','执行中'],['pending','等待中'],['failed','失败'],['cancelled','已取消'],['done','已完成']
-        ].map(([key,label]) => `<div class="stat"><strong>${count(key)}</strong><span>${label}</span></div>`).join('');
-        document.getElementById('task-list').innerHTML = data.jobs.length ? data.jobs.map(renderTask).join('') : '<div class="empty">没有符合条件的任务</div>';
-    } catch (error) {
-        document.getElementById('task-list').innerHTML = `<div class="empty">加载失败：${esc(error.message)}</div>`;
-    }
-}
-function renderTask(job) {
-    const title = job.result?.title || job.options?.title || job.source_url;
-    const queue = job.queue_position ? `队列第 ${job.queue_position} 位` : stages[job.stage] || job.stage;
-    const canCancel = ['pending','running'].includes(job.status);
-    const canRetry = ['failed','cancelled'].includes(job.status);
-    return `<article class="task" id="task-${job.id}">
-        <div class="task-main">
-            <div class="source">${esc(job.source_type)}</div>
-            <div><div class="title">${esc(title)}</div><div class="message">${esc(job.message || '')}</div></div>
-            <div><span class="badge ${esc(job.status)}">${labels[job.status] || esc(job.status)}</span><div class="meta">${esc(queue)}</div></div>
-            <div class="meta">${job.status === 'pending' ? '等待 ' : '运行 '}${elapsed(job.started_at || job.created_at)}</div>
-            <div class="actions">
-                <button onclick="toggleDetail('${job.id}')">详情</button>
-                ${canCancel ? `<button class="danger" onclick="cancelJob('${job.id}')">取消</button>` : ''}
-                ${canRetry ? `<button onclick="retryJob('${job.id}')">重试</button>` : ''}
-                ${job.error_code === 'rss_publish_failed' ? `<button onclick="retryPublish('${job.id}')">重试发布</button>` : ''}
-                ${!canCancel ? `<button class="danger" onclick="deleteJob('${job.id}')">删除</button>` : ''}
-            </div>
-        </div>
-        <div class="detail" id="detail-${job.id}"></div>
-    </article>`;
-}
-async function toggleDetail(id) {
-    const detail = document.getElementById(`detail-${id}`);
-    if (detail.classList.contains('open')) return detail.classList.remove('open');
-    const {job} = await request(`/api/podcast-jobs/${id}`);
-    const files = (job.files || []).map(file => `<a href="${esc(file.url)}" target="_blank">${esc(file.label)}</a>`).join('') || '<span class="meta">暂无文件</span>';
-    const events = (job.events || []).map(event => `<div class="event"><strong>${esc(stages[event.stage] || event.event_type)}</strong><div>${esc(event.message)}</div><div class="meta">${new Date(event.created_at).toLocaleString()}</div></div>`).join('') || '<span class="meta">暂无事件</span>';
-    detail.innerHTML = `<section><h3 class="section-title">任务信息</h3><div class="meta">${esc(job.source_url)}</div><p>${esc(job.error_message || job.message || '')}</p><div class="files">${files}</div></section><section><h3 class="section-title">执行时间线</h3><div class="events">${events}</div></section>`;
-    detail.classList.add('open');
-}
-async function cancelJob(id) { if (confirm('取消这个任务？')) { await request(`/api/podcast-jobs/${id}/cancel`, {method:'POST'}); loadTasks(); } }
-async function retryJob(id) { await request(`/api/podcast-jobs/${id}/retry`, {method:'POST'}); loadTasks(); }
-async function retryPublish(id) { await request(`/api/podcast-jobs/${id}/retry-publish`, {method:'POST'}); loadTasks(); }
-async function deleteJob(id) { if (confirm('只删除任务记录，不删除生成内容。继续？')) { await request(`/api/podcast-jobs/${id}`, {method:'DELETE'}); loadTasks(); } }
-async function cleanupJobs() { const data = await request('/api/podcast-jobs/cleanup', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({days:30})}); alert(`已清理 ${data.removed} 条记录`); loadTasks(); }
-loadTasks();
-setInterval(loadTasks, 5000);
-</script>
-</body>
-</html>
+<body><div class="shell">
+<header class="page-header"><div><div class="eyebrow">任务编排</div><h1>播客任务中心</h1><div class="sub">跟踪生成进度、查看产物与执行记录，快速定位需要处理的任务。</div></div><div class="header-actions"><a class="link-button primary" href="/generate">新建播客</a><a class="link-button" href="/">返回知识库</a></div></header>
+<section class="stats" id="stats" aria-label="任务状态统计"></section>
+<div class="toolbar"><div class="filters"><select id="status-filter" onchange="loadTasks()" aria-label="筛选任务状态"><option value="all">全部状态</option><option value="running">执行中</option><option value="pending">等待中</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="done">已完成</option></select><button onclick="loadTasks()">立即刷新</button><span class="refresh-note">每 5 秒自动刷新，已展开详情保持打开</span></div><button class="danger" onclick="cleanupJobs()">清理 30 天前记录</button></div>
+<main class="task-list" id="task-list"><div class="empty">正在加载任务...</div></main>
+</div><script>
+const labels={pending:'等待中',running:'执行中',cancelling:'取消中',cancelled:'已取消',failed:'失败',done:'已完成'};
+const stages={pending:'等待执行',resolving:'解析来源',downloading:'下载媒体',transcribing:'语音转录',writing_script:'整理文稿',generating_audio:'生成音频',audio_ready:'原音已就绪',publishing:'发布 RSS',done:'完成',failed:'失败',cancelled:'已取消'};
+const stageOrder=['pending','resolving','downloading','transcribing','writing_script','generating_audio','audio_ready','publishing','done'];
+const terminalStatuses=new Set(['done','failed','cancelled']);const openDetailIds=new Set();const detailCache=new Map();let loadingTasks=false;
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const formatDate=value=>value?new Date(value).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+const elapsed=(start,end=null)=>{if(!start)return '—';const seconds=Math.max(0,Math.floor(((end?new Date(end):new Date()).getTime()-new Date(start).getTime())/1000));if(seconds<60)return `${seconds} 秒`;if(seconds<3600)return `${Math.floor(seconds/60)} 分钟`;const hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60);if(hours<24)return `${hours} 小时 ${minutes} 分钟`;const days=Math.floor(hours/24);return `${days} 天 ${hours%24} 小时`};
+const taskDuration=job=>elapsed(job.started_at||job.created_at,terminalStatuses.has(job.status)?(job.finished_at||job.updated_at):null);
+const progressPercent=job=>{if(job.status==='done')return 100;const index=stageOrder.indexOf(job.stage);return index<0?8:Math.max(8,Math.round(index/(stageOrder.length-1)*100))};
+async function request(url,options={}){const response=await fetch(url,options),data=await response.json();if(!response.ok||data.ok===false)throw new Error(data.error||'操作失败');return data}
+function setStatusFilter(status){document.getElementById('status-filter').value=status;loadTasks()}
+async function loadTasks(){if(loadingTasks)return;loadingTasks=true;try{const filter=document.getElementById('status-filter').value;const data=await request(`/api/podcast-jobs?status=${filter}&limit=100`);const count=key=>data.counts[key]||0;document.getElementById('stats').innerHTML=[['running','执行中'],['pending','等待中'],['failed','失败'],['cancelled','已取消'],['done','已完成']].map(([key,label])=>`<button class="stat ${filter===key?'active':''}" data-status="${key}" onclick="setStatusFilter('${key}')"><span><i class="stat-mark"></i>${label}</span><strong>${count(key)}</strong></button>`).join('');document.getElementById('task-list').innerHTML=data.jobs.length?data.jobs.map(renderTask).join(''):'<div class="empty">没有符合条件的任务</div>';await Promise.all([...openDetailIds].map(id=>hydrateDetail(id,true)))}catch(error){document.getElementById('task-list').innerHTML=`<div class="empty">加载失败：${esc(error.message)}</div>`}finally{loadingTasks=false}}
+function renderTask(job){const title=job.result?.title||job.options?.title||job.source_url;const queue=job.queue_position?`队列第 ${job.queue_position} 位`:stages[job.stage]||job.stage;const canCancel=['pending','running'].includes(job.status),canRetry=['failed','cancelled'].includes(job.status),isOpen=openDetailIds.has(job.id);const progress=['pending','running','cancelling'].includes(job.status)?`<div class="progress-track" aria-label="任务进度"><div class="progress-value" style="width:${progressPercent(job)}%"></div></div>`:'';return `<article class="task status-${esc(job.status)}" id="task-${job.id}"><div class="task-main"><div class="task-copy"><div class="task-eyebrow"><span class="source-chip">${esc(job.source_type)}</span><span class="badge ${esc(job.status)}">${labels[job.status]||esc(job.status)}</span><span class="stage-label">${esc(queue)}</span></div><div class="title">${esc(title)}</div><div class="message">${esc(job.message||'')}</div>${progress}</div><div class="task-side"><div class="timing"><span>${job.status==='pending'?'等待时间':'任务耗时'}</span><strong>${taskDuration(job)}</strong></div><div class="actions"><button class="detail-trigger ${isOpen?'active':''}" data-detail-button="${job.id}" aria-expanded="${isOpen}" aria-controls="detail-${job.id}" onclick="toggleDetail('${job.id}')">${isOpen?'收起':'详情'}</button>${canCancel?`<button class="danger" onclick="cancelJob('${job.id}')">取消</button>`:''}${canRetry?`<button onclick="retryJob('${job.id}')">重试</button>`:''}${job.error_code==='rss_publish_failed'?`<button onclick="retryPublish('${job.id}')">重试发布</button>`:''}${!canCancel?`<button class="danger" onclick="deleteJob('${job.id}')">删除</button>`:''}</div></div></div><div class="detail ${isOpen?'open':''}" id="detail-${job.id}">${isOpen?(detailCache.get(job.id)||'<div class="detail-loading">正在刷新详情...</div>'):''}</div></article>`}
+function renderDetail(job){const files=(job.files||[]).map(file=>`<a class="file-link" href="${esc(file.url)}" target="_blank" rel="noopener">${esc(file.label)}</a>`).join('')||'<span class="meta">暂无生成文件</span>';const events=(job.events||[]).slice().reverse().map(event=>`<div class="event"><strong>${esc(stages[event.stage]||event.event_type)}</strong><div class="event-message">${esc(event.message)}</div><div class="meta">${formatDate(event.created_at)}</div></div>`).join('')||'<span class="meta">暂无执行记录</span>';const end=terminalStatuses.has(job.status)?(job.finished_at||job.updated_at):null;return `<section class="detail-panel"><h3 class="section-title">任务信息</h3><dl class="info-grid"><dt>来源链接</dt><dd><a href="${esc(job.source_url)}" target="_blank" rel="noopener">${esc(job.source_url)}</a></dd><dt>创建时间</dt><dd>${formatDate(job.created_at)}</dd><dt>开始时间</dt><dd>${formatDate(job.started_at)}</dd><dt>完成时间</dt><dd>${formatDate(end)}</dd><dt>错误代码</dt><dd>${esc(job.error_code||'—')}</dd></dl><div class="detail-message">${esc(job.error_message||job.message||'暂无补充信息')}</div><div class="files">${files}</div></section><section class="detail-panel"><h3 class="section-title">执行时间线</h3><div class="events">${events}</div></section>`}
+async function hydrateDetail(id,force=false){const detail=document.getElementById(`detail-${id}`);if(!detail||!openDetailIds.has(id))return;detail.classList.add('open');if(!force&&detailCache.has(id)){detail.innerHTML=detailCache.get(id);return}if(!detailCache.has(id))detail.innerHTML='<div class="detail-loading">正在加载详情...</div>';try{const{job}=await request(`/api/podcast-jobs/${id}`),html=renderDetail(job);detailCache.set(id,html);const current=document.getElementById(`detail-${id}`);if(current&&openDetailIds.has(id)){current.innerHTML=html;current.classList.add('open')}}catch(error){detail.innerHTML=`<div class="detail-loading">详情加载失败：${esc(error.message)}</div>`}}
+async function toggleDetail(id){const detail=document.getElementById(`detail-${id}`),button=document.querySelector(`[data-detail-button="${id}"]`);if(openDetailIds.has(id)){openDetailIds.delete(id);detail?.classList.remove('open');if(detail)detail.innerHTML='';if(button){button.textContent='详情';button.classList.remove('active');button.setAttribute('aria-expanded','false')}return}openDetailIds.add(id);if(button){button.textContent='收起';button.classList.add('active');button.setAttribute('aria-expanded','true')}await hydrateDetail(id)}
+async function cancelJob(id){if(confirm('取消这个任务？')){await request(`/api/podcast-jobs/${id}/cancel`,{method:'POST'});loadTasks()}}async function retryJob(id){await request(`/api/podcast-jobs/${id}/retry`,{method:'POST'});loadTasks()}async function retryPublish(id){await request(`/api/podcast-jobs/${id}/retry-publish`,{method:'POST'});loadTasks()}async function deleteJob(id){if(confirm('只删除任务记录，不删除生成内容。继续？')){await request(`/api/podcast-jobs/${id}`,{method:'DELETE'});openDetailIds.delete(id);detailCache.delete(id);loadTasks()}}async function cleanupJobs(){const data=await request('/api/podcast-jobs/cleanup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:30})});alert(`已清理 ${data.removed} 条记录`);loadTasks()}
+loadTasks();setInterval(loadTasks,5000);
+</script></body></html>

@@ -11,6 +11,7 @@ from content_to_podcast.source_adapters import (
     SourcePreparationError,
     _finish_video_source,
     create_work_dir,
+    transcribe_prepared_source,
 )
 from services.extractor import (
     ExtractionError,
@@ -33,13 +34,23 @@ def prepare_source(
     source_type: str,
     on_status: Callable | None = None,
     force_transcribe: bool = False,
+    use_original_audio: bool = False,
+    transcribe_missing: bool = True,
 ) -> PreparedSource:
     if source_type == "douyin":
-        return DouyinAdapter().prepare(source, create_work_dir("douyin"), on_status, force_transcribe)
+        return DouyinAdapter().prepare(
+            source, create_work_dir("douyin"), on_status, force_transcribe,
+            use_original_audio, transcribe_missing,
+        )
     if source_type == "bilibili":
-        return BilibiliAdapter().prepare(source, create_work_dir("bilibili"), on_status, force_transcribe)
+        return BilibiliAdapter().prepare(
+            source, create_work_dir("bilibili"), on_status, force_transcribe,
+            use_original_audio, transcribe_missing,
+        )
     if source_type == "youtube":
-        return _prepare_youtube(source, on_status, force_transcribe)
+        return _prepare_youtube(
+            source, on_status, force_transcribe, use_original_audio, transcribe_missing,
+        )
     if source_type == "wechat":
         text, thumbnail = extract_from_wechat(source)
         return _article_source(source, source_type, text, thumbnail)
@@ -74,7 +85,13 @@ def _article_source(source: str, source_type: str, text: str, thumbnail: str | N
     )
 
 
-def _prepare_youtube(source: str, on_status: Callable | None, force_transcribe: bool = False) -> PreparedSource:
+def _prepare_youtube(
+    source: str,
+    on_status: Callable | None,
+    force_transcribe: bool = False,
+    use_original_audio: bool = False,
+    transcribe_missing: bool = True,
+) -> PreparedSource:
     canonical = normalize_video_url(source)
     try:
         text, thumbnail = extract_from_youtube(canonical)
@@ -112,7 +129,8 @@ def _prepare_youtube(source: str, on_status: Callable | None, force_transcribe: 
         work_dir=work_dir,
         on_status=on_status,
         force_transcribe=force_transcribe,
+        transcribe_missing=transcribe_missing,
     )
-    if text:
+    if text and prepared.transcript_source == "whisper":
         prepared.warnings.append("平台无有效字幕，已使用 Faster-Whisper 转录。")
     return prepared

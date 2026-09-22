@@ -1509,7 +1509,7 @@
                 setTimeout(() => { if (!dirty) status.textContent = ''; }, 2000);
                 return true;
             } else {
-                status.textContent = '保存失败';
+                status.textContent = data.error ? `保存失败：${data.error}` : '保存失败';
                 status.className = 'save-status err';
                 return false;
             }

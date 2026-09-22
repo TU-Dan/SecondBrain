@@ -19,6 +19,7 @@ import subprocess
 import sys
 import uuid
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -91,6 +92,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+ARTICLE_SCRIPTS_DIR = Path("static/scripts")
 
 def sanitize_filename(title: str) -> str:
     safe = re.sub(r'[^\w\u4e00-\u9fff]', '_', title)
@@ -655,17 +657,32 @@ async def api_batch_cards(article_id: str):
 
 @app.post("/api/articles/{article_id}/content")
 async def save_article_content(article_id: str, request: Request):
-    from services.db import get_article
+    from services.db import get_article, update_article_content_path
     article = get_article(article_id)
-    if not article or not article.get("article_md_path"):
+    if not article:
         return JSONResponse({"error": "not found"}, status_code=404)
-    file_path = article["article_md_path"].lstrip("/")
     body = await request.json()
     content = body.get("content", "")
+    if not isinstance(content, str):
+        return JSONResponse({"error": "content must be a string"}, status_code=400)
+
+    created = not bool(article.get("article_md_path"))
+    if created:
+        ARTICLE_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_title = sanitize_filename(article.get("title") or "") or "article"
+        filename = f"{safe_title}_{article_id[:8]}.md"
+        file_path = ARTICLE_SCRIPTS_DIR / filename
+        public_path = f"/static/scripts/{filename}"
+    else:
+        public_path = article["article_md_path"]
+        file_path = Path(public_path.lstrip("/"))
+
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
-        return JSONResponse({"ok": True})
+        if created:
+            update_article_content_path(article_id, public_path, len(content))
+        return JSONResponse({"ok": True, "created": created, "path": public_path})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1008,14 +1025,16 @@ async def publish_to_pages():
     try:
         result = subprocess.run(
             [sys.executable, "scripts/publish_to_pages.py"],
-            capture_output=True, text=True, timeout=300
+            capture_output=True,
+            text=True,
+            timeout=int(os.getenv("PUBLISH_PROCESS_TIMEOUT_SECONDS", "900")),
         )
         if result.returncode != 0:
             return JSONResponse({"ok": False, "error": result.stderr or result.stdout})
         rss_url = f"{pages_url}/podcast.xml"
         return JSONResponse({"ok": True, "rss_url": rss_url, "log": result.stdout})
     except subprocess.TimeoutExpired:
-        return JSONResponse({"ok": False, "error": "发布超时，请检查网络连接"}, status_code=500)
+        return JSONResponse({"ok": False, "error": "发布超时，请检查 GitHub 和 Cloudflare Pages 状态"}, status_code=500)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -1102,6 +1121,7 @@ async def generate_from_url(
     title: str = Form(""),
     voice: str = Form("zh-CN-YunxiNeural"),
     use_original_audio: bool = Form(False),
+    whisper_transcribe: bool = Form(False),
     summarize: bool = Form(False),
     force_transcribe: bool = Form(False),
 ):
@@ -1113,6 +1133,7 @@ async def generate_from_url(
         "base_url": base_url,
         "voice": voice,
         "use_original_audio": use_original_audio,
+        "whisper_transcribe": whisper_transcribe if use_original_audio else False,
         "summarize": summarize,
         "force_transcribe": force_transcribe,
     })

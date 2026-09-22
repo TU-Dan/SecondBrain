@@ -77,6 +77,11 @@ WHISPER_HF_ENDPOINT=https://hf-mirror.com
 
 需要忽略平台字幕并重新转录时，可在任务 API 中传入 `force_transcribe=true`，或在 CLI 中使用 `--force-transcribe`。
 
+使用原始音频时，系统会优先下载原音并发布到 RSS，同时尝试平台字幕和 AI 字幕。
+没有可用字幕时，默认不再运行 Whisper，也不生成逐字稿和知识库文章；如需后台补全，
+在任务 API 中传入 `whisper_transcribe=true`，或在 CLI 中同时使用
+`--use-original-audio --whisper-transcribe`。超过静态托管单文件限制的长原音会自动分段发布。
+
 生成任务会写入 SQLite `podcast_jobs` 队列，由单 worker 顺序执行。服务重启后，中断任务会自动回到等待队列。
 
 ## 命令行用法

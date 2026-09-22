@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -39,6 +39,7 @@ class PreparedSource:
     media_path: str | None = None
     warnings: list[str] = field(default_factory=list)
     transcript_files: list[str] = field(default_factory=list)
+    work_dir: str | None = None
 
 
 def _notify(callback: Callable | None, stage: str, message: str) -> None:
@@ -183,6 +184,8 @@ class DouyinAdapter:
         work_dir: str,
         on_status: Callable | None = None,
         force_transcribe: bool = False,
+        use_original_audio: bool = False,
+        transcribe_missing: bool = True,
     ) -> PreparedSource:
         resolved_url = _extract_shared_url(url, ("douyin.com", "iesdouyin.com"))
         _notify(on_status, "resolving", "正在通过抖音专用下载器解析作品...")
@@ -230,6 +233,7 @@ class DouyinAdapter:
             work_dir=work_dir,
             on_status=on_status,
             force_transcribe=force_transcribe,
+            transcribe_missing=transcribe_missing,
         )
 
     def _submit(self, url: str) -> dict:
@@ -330,6 +334,8 @@ class BilibiliAdapter:
         work_dir: str,
         on_status: Callable | None = None,
         force_transcribe: bool = False,
+        use_original_audio: bool = False,
+        transcribe_missing: bool = True,
     ) -> PreparedSource:
         if not os.path.exists(self.binary_path):
             raise SourcePreparationError(
@@ -342,7 +348,10 @@ class BilibiliAdapter:
             "--work-dir", work_dir,
             "--file-pattern", "source",
             "--multi-file-pattern", "source",
+            "--skip-ai", "false",
         ]
+        if use_original_audio:
+            command.append("--audio-only")
         cookie_file = os.getenv("BILIBILI_COOKIE_FILE", "data/cookies/bilibili.txt")
         if os.path.exists(cookie_file):
             cookie = Path(cookie_file).read_text(encoding="utf-8").strip()
@@ -364,6 +373,7 @@ class BilibiliAdapter:
             work_dir=work_dir,
             on_status=on_status,
             force_transcribe=force_transcribe,
+            transcribe_missing=transcribe_missing,
         )
 
 
@@ -386,22 +396,8 @@ def _finish_video_source(
     work_dir: str,
     on_status: Callable | None,
     force_transcribe: bool = False,
+    transcribe_missing: bool = True,
 ) -> PreparedSource:
-    cached_whisper = _find_cached_whisper(media_path)
-    if cached_whisper and not force_transcribe:
-        text, transcript_files = cached_whisper
-        return PreparedSource(
-            source_type=source_type,
-            original_url=original_url,
-            canonical_url=canonical_url,
-            title=title,
-            text=text,
-            transcript_source="whisper",
-            thumbnail_url=thumbnail_url,
-            media_path=media_path,
-            transcript_files=transcript_files,
-        )
-
     subtitle = _find_subtitle(work_dir)
     if subtitle and not force_transcribe:
         text, subtitle_path = subtitle
@@ -415,14 +411,80 @@ def _finish_video_source(
             thumbnail_url=thumbnail_url,
             media_path=media_path,
             transcript_files=[subtitle_path],
+            work_dir=work_dir,
+        )
+
+    cached_whisper = _find_cached_whisper(media_path)
+    if cached_whisper and not force_transcribe and transcribe_missing:
+        text, transcript_files = cached_whisper
+        return PreparedSource(
+            source_type=source_type,
+            original_url=original_url,
+            canonical_url=canonical_url,
+            title=title,
+            text=text,
+            transcript_source="whisper",
+            thumbnail_url=thumbnail_url,
+            media_path=media_path,
+            transcript_files=transcript_files,
+            work_dir=work_dir,
+        )
+
+    if not transcribe_missing:
+        return PreparedSource(
+            source_type=source_type,
+            original_url=original_url,
+            canonical_url=canonical_url,
+            title=title,
+            text="",
+            transcript_source="unavailable",
+            thumbnail_url=thumbnail_url,
+            media_path=media_path,
+            warnings=["无可用字幕或 AI 字幕。"],
+            work_dir=work_dir,
+        )
+
+    prepared = PreparedSource(
+        source_type=source_type,
+        original_url=original_url,
+        canonical_url=canonical_url,
+        title=title,
+        text="",
+        transcript_source="unavailable",
+        thumbnail_url=thumbnail_url,
+        media_path=media_path,
+        work_dir=work_dir,
+    )
+    return transcribe_prepared_source(prepared, on_status, force=force_transcribe)
+
+
+def transcribe_prepared_source(
+    prepared: PreparedSource,
+    on_status: Callable | None = None,
+    force: bool = False,
+) -> PreparedSource:
+    if not prepared.media_path:
+        raise SourcePreparationError("没有可供 Whisper 转录的音频。", "transcription_failed")
+
+    cached_whisper = _find_cached_whisper(prepared.media_path)
+    if cached_whisper and not force:
+        text, transcript_files = cached_whisper
+        return replace(
+            prepared,
+            text=text,
+            transcript_source="whisper",
+            transcript_files=transcript_files,
+            warnings=[warning for warning in prepared.warnings if "无可用字幕" not in warning],
         )
 
     message = (
         "正在按要求使用 Faster-Whisper 重新转录..."
-        if force_transcribe
-        else "没有可用平台字幕，正在使用 Faster-Whisper 转录..."
+        if force
+        else "原始音频已发布；没有可用平台字幕，正在后台使用 Faster-Whisper 转录..."
     )
     _notify(on_status, "transcribing", message)
+    media_path = prepared.media_path
+    work_dir = prepared.work_dir or str(Path(media_path).parent)
     audio_path = media_path if Path(media_path).suffix.lower() in {".mp3", ".m4a", ".aac", ".flac", ".wav"} else _extract_audio(media_path, work_dir)
     transcription = transcribe_audio(audio_path, work_dir)
     media = Path(media_path)
@@ -432,20 +494,18 @@ def _finish_video_source(
         shutil.copy2(transcription.srt_path, cache_srt)
     if Path(transcription.markdown_path).is_file() and Path(transcription.markdown_path) != cache_markdown:
         shutil.copy2(transcription.markdown_path, cache_markdown)
-    return PreparedSource(
-        source_type=source_type,
-        original_url=original_url,
-        canonical_url=canonical_url,
-        title=title,
+    return replace(
+        prepared,
         text=transcription.text,
         transcript_source="whisper",
-        thumbnail_url=thumbnail_url,
         media_path=audio_path,
         transcript_files=[
             str(path)
             for path in (cache_srt, cache_markdown)
             if path.is_file()
         ] or [transcription.srt_path, transcription.markdown_path],
+        warnings=[warning for warning in prepared.warnings if "无可用字幕" not in warning],
+        work_dir=work_dir,
     )
 
 

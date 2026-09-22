@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "packages" / "content-to-podcast"))
 
 from content_to_podcast import PodcastGenerationOptions, PodcastGenerationServices, PreparedSource, generate_podcast
+from content_to_podcast.generator import normalize_original_audio_for_podcast
 from content_to_podcast.source_adapters import (
+    BilibiliAdapter,
     DouyinAdapter,
     SourcePreparationError,
     _extract_shared_url,
@@ -107,6 +109,51 @@ class PreparedSourceTests(unittest.TestCase):
             self.assertEqual(prepared.transcript_source, "whisper")
             self.assertEqual(prepared.text, "转录结果")
 
+    def test_missing_subtitle_can_skip_whisper_for_original_audio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "source.m4a"
+            media.write_bytes(b"audio")
+
+            with patch("content_to_podcast.source_adapters.transcribe_audio") as transcribe:
+                prepared = _finish_video_source(
+                    source_type="bilibili",
+                    original_url="https://b23.tv/test",
+                    canonical_url="https://www.bilibili.com/video/test",
+                    title="测试",
+                    thumbnail_url=None,
+                    media_path=str(media),
+                    work_dir=tmp,
+                    on_status=None,
+                    transcribe_missing=False,
+                )
+
+            self.assertEqual(prepared.transcript_source, "unavailable")
+            self.assertEqual(prepared.text, "")
+            self.assertIn("无可用字幕", prepared.warnings[0])
+            transcribe.assert_not_called()
+
+    def test_bilibili_original_audio_downloads_audio_and_includes_ai_subtitles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "BBDown"
+            binary.write_text("binary", encoding="utf-8")
+
+            def fake_run(command, **kwargs):
+                Path(tmp, "source.m4a").write_bytes(b"audio")
+                return SimpleNamespace(stdout="视频标题: 测试标题", stderr="", returncode=0)
+
+            with patch("content_to_podcast.source_adapters._run", side_effect=fake_run) as run:
+                prepared = BilibiliAdapter(str(binary)).prepare(
+                    "https://b23.tv/test",
+                    tmp,
+                    use_original_audio=True,
+                    transcribe_missing=False,
+                )
+
+            command = run.call_args.args[0]
+            self.assertIn("--audio-only", command)
+            self.assertEqual(command[command.index("--skip-ai") + 1], "false")
+            self.assertEqual(prepared.transcript_source, "unavailable")
+
     def test_force_transcribe_ignores_platform_subtitle(self):
         with tempfile.TemporaryDirectory() as tmp:
             media = Path(tmp) / "source.mp3"
@@ -159,6 +206,28 @@ class PreparedSourceTests(unittest.TestCase):
 
 
 class GeneratorPreparedSourceTests(unittest.TestCase):
+    def test_long_original_audio_is_split_for_static_hosting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "source.mp3").write_bytes(b"oversized")
+
+            def fake_ffmpeg(command, **kwargs):
+                Path(tmp, "source_part000.mp3").write_bytes(b"part-one")
+                Path(tmp, "source_part001.mp3").write_bytes(b"part-two")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with (
+                patch(
+                    "content_to_podcast.generator.normalize_audio_for_podcast",
+                    side_effect=RuntimeError("超过 Cloudflare Pages 限制"),
+                ),
+                patch("content_to_podcast.generator.shutil.which", return_value="/usr/bin/ffmpeg"),
+                patch("content_to_podcast.generator.subprocess.run", side_effect=fake_ffmpeg),
+            ):
+                parts = normalize_original_audio_for_podcast("source.m4a", tmp)
+
+            self.assertEqual(parts, ["source_part000.mp3", "source_part001.mp3"])
+            self.assertFalse(Path(tmp, "source.mp3").exists())
+
     def test_generator_uses_prepared_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             audio_dir = Path(tmp) / "audio"
@@ -184,7 +253,7 @@ class GeneratorPreparedSourceTests(unittest.TestCase):
                 polish_chunk=lambda text, index, total: text,
                 generate_tags=lambda title, text: ["测试"],
                 chunk_threshold=1000,
-                prepare_source=lambda source, source_type, callback, force_transcribe: PreparedSource(
+                prepare_source=lambda source, source_type, callback, force_transcribe, use_original_audio, transcribe_missing: PreparedSource(
                     source_type="douyin",
                     original_url=source,
                     canonical_url="https://www.douyin.com/video/test",
@@ -207,6 +276,119 @@ class GeneratorPreparedSourceTests(unittest.TestCase):
             self.assertEqual(result.title, "抖音标题")
             self.assertEqual(result.transcript_source, "whisper")
             self.assertEqual(result.source_url, "https://www.douyin.com/video/test")
+
+    def test_original_audio_is_released_before_optional_whisper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_dir = Path(tmp) / "audio"
+            media = Path(tmp) / "source.m4a"
+            media.write_bytes(b"audio")
+            order = []
+
+            def prepare_source(source, source_type, callback, force_transcribe, use_original_audio, transcribe_missing):
+                self.assertTrue(use_original_audio)
+                self.assertFalse(transcribe_missing)
+                return PreparedSource(
+                    source_type="bilibili",
+                    original_url=source,
+                    canonical_url=source,
+                    title="测试标题",
+                    text="",
+                    transcript_source="unavailable",
+                    media_path=str(media),
+                    warnings=["无可用字幕。"],
+                )
+
+            def transcribe(prepared, callback, force):
+                self.assertFalse(force)
+                order.append("whisper")
+                prepared.text = "Whisper 逐字稿"
+                prepared.transcript_source = "whisper"
+                return prepared
+
+            services = PodcastGenerationServices(
+                extract_content=lambda source, source_type: ("legacy", None),
+                download_youtube_audio=lambda source, output_dir: None,
+                generate_audio_sync=lambda text, voice, output_dir: "unused.mp3",
+                detect_language=lambda text: "zh",
+                generate_title=lambda text: "AI 标题",
+                format_transcript=lambda text: (order.append("article") or ("知识库文章", ["测试"])),
+                distill_and_translate=lambda text: ("摘要", ["测试"]),
+                chunk_text=lambda text: [text],
+                polish_chunk=lambda text, index, total: text,
+                generate_tags=lambda title, text: ["测试"],
+                chunk_threshold=1000,
+                prepare_source=prepare_source,
+                transcribe_prepared_source=transcribe,
+            )
+
+            with patch("content_to_podcast.generator.normalize_audio_for_podcast", side_effect=lambda filename, directory: filename):
+                result = generate_podcast(
+                    PodcastGenerationOptions(
+                        source="https://b23.tv/test",
+                        source_type="bilibili",
+                        use_original_audio=True,
+                        whisper_transcribe=True,
+                        services=services,
+                        audio_dir=str(audio_dir),
+                        scripts_dir=str(Path(tmp) / "scripts"),
+                        transcripts_dir=str(Path(tmp) / "transcripts"),
+                        images_dir=str(Path(tmp) / "images"),
+                    ),
+                    on_original_audio_ready=lambda items: order.append("audio_published"),
+                )
+
+            self.assertEqual(order, ["audio_published", "whisper", "article"])
+            self.assertEqual(result.transcript_source, "whisper")
+            self.assertTrue(result.article_script_url)
+
+    def test_original_audio_without_subtitle_does_not_run_whisper_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audio_dir = Path(tmp) / "audio"
+            media = Path(tmp) / "source.m4a"
+            media.write_bytes(b"audio")
+            transcribe = Mock()
+            services = PodcastGenerationServices(
+                extract_content=lambda source, source_type: ("legacy", None),
+                download_youtube_audio=lambda source, output_dir: None,
+                generate_audio_sync=lambda text, voice, output_dir: "unused.mp3",
+                detect_language=lambda text: "zh",
+                generate_title=lambda text: "AI 标题",
+                format_transcript=lambda text: ("不应生成", []),
+                distill_and_translate=lambda text: ("不应生成", []),
+                chunk_text=lambda text: [text],
+                polish_chunk=lambda text, index, total: text,
+                generate_tags=lambda title, text: [],
+                chunk_threshold=1000,
+                prepare_source=lambda *args: PreparedSource(
+                    source_type="bilibili",
+                    original_url=args[0],
+                    canonical_url=args[0],
+                    title="测试标题",
+                    text="",
+                    transcript_source="unavailable",
+                    media_path=str(media),
+                    warnings=["无可用字幕。"],
+                ),
+                transcribe_prepared_source=transcribe,
+            )
+
+            with patch("content_to_podcast.generator.normalize_audio_for_podcast", side_effect=lambda filename, directory: filename):
+                result = generate_podcast(PodcastGenerationOptions(
+                    source="https://b23.tv/test",
+                    source_type="bilibili",
+                    use_original_audio=True,
+                    services=services,
+                    audio_dir=str(audio_dir),
+                    scripts_dir=str(Path(tmp) / "scripts"),
+                    transcripts_dir=str(Path(tmp) / "transcripts"),
+                    images_dir=str(Path(tmp) / "images"),
+                ))
+
+            transcribe.assert_not_called()
+            self.assertEqual(result.transcript_source, "unavailable")
+            self.assertEqual(result.transcript_url, "")
+            self.assertEqual(result.article_script_url, "")
+            self.assertIn("无可用字幕", result.warnings[0])
 
 
 class PodcastJobPersistenceTests(unittest.TestCase):
@@ -292,6 +474,68 @@ class PodcastJobPersistenceTests(unittest.TestCase):
                 saved = db.get_podcast_job(job_id)
                 self.assertEqual(saved["status"], "done")
                 self.assertEqual(saved["result"]["title"], "测试播客")
+            finally:
+                db.DB_PATH = original_path
+
+    def test_original_audio_is_added_to_rss_before_background_enrichment(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job(
+                    "https://b23.tv/test",
+                    "bilibili",
+                    {"use_original_audio": True, "whisper_transcribe": True},
+                )
+                item = SimpleNamespace(
+                    title="测试播客",
+                    description="无可用字幕或 AI 字幕。",
+                    audio_filename="test.mp3",
+                    audio_length=10,
+                    image_url=None,
+                    audio_mime="audio/mpeg",
+                    audio_url="http://localhost:8000/static/audio/test.mp3",
+                    script_url="/static/scripts/test.md",
+                    transcript_url="/static/transcripts/test.md",
+                    word_count=20,
+                    tags=[],
+                    __dict__={"title": "测试播客", "audio_filename": "test.mp3"},
+                )
+                generated = SimpleNamespace(
+                    title="测试播客",
+                    source_url="https://b23.tv/test",
+                    source_type="bilibili",
+                    article_summary="测试描述",
+                    article_script_url="/static/scripts/test.md",
+                    transcript_url="/static/transcripts/test.md",
+                    image_url=None,
+                    article_word_count=20,
+                    transcript_source="whisper",
+                    warnings=[],
+                    tags=[],
+                    items=[item],
+                )
+                order = []
+
+                def fake_generate(options, on_status=None, on_original_audio_ready=None):
+                    self.assertTrue(options.whisper_transcribe)
+                    on_original_audio_ready([item])
+                    order.append("whisper_finished")
+                    return generated
+
+                with (
+                    patch.object(podcast_jobs, "generate_podcast", side_effect=fake_generate),
+                    patch.object(podcast_jobs, "add_episode", side_effect=lambda **kwargs: order.append("rss_added")) as add,
+                    patch.object(podcast_jobs, "_publish_original_audio", side_effect=lambda *args: order.append("audio_published")),
+                    patch.object(podcast_jobs, "_publish"),
+                    patch.object(podcast_jobs, "_remember"),
+                ):
+                    result = podcast_jobs.run_next()
+
+                self.assertTrue(result["ok"])
+                self.assertEqual(order, ["rss_added", "audio_published", "whisper_finished"])
+                self.assertEqual(add.call_count, 1)
             finally:
                 db.DB_PATH = original_path
 

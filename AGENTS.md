@@ -35,6 +35,8 @@ bash scripts/check_podcast_tools.sh
 
 ```bash
 python -m unittest discover -s tests -p 'test_podcast_pipeline.py' -v
+python -m unittest discover -s tests -p 'test_publish_to_pages.py' -v
+python -m unittest discover -s tests -p 'test_article_content.py' -v
 python scripts/verify_podcast_fidelity.py
 python scripts/verify_youtube_url_normalization.py
 python -m py_compile main.py services/*.py packages/content-to-podcast/content_to_podcast/*.py
@@ -60,6 +62,14 @@ For podcast task-management changes, confirm:
   without blocking the queue.
 - Retrying a failed or cancelled task creates a new pending attempt linked to
   the original job.
+- Original-audio jobs publish audio before transcript/article enrichment.
+- Platform or AI subtitles generate the transcript without Whisper; when none
+  are available, Whisper runs only if `whisper_transcribe=true`.
+- Long original audio is split into files below the Cloudflare Pages limit
+  before RSS publication.
+- Expanded `/tasks` details remain open across the five-second automatic refresh.
+- Terminal task durations use `finished_at` (or the final update time) instead
+  of continuing to grow after completion.
 
 For social-output prompt changes, confirm:
 

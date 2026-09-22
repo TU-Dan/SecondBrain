@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default="http://localhost:8000", help="Public base URL for generated file links")
     parser.add_argument("--output-dir", default="static", help="Output root directory")
     parser.add_argument("--use-original-audio", action="store_true", help="Use original YouTube audio instead of generated TTS")
+    parser.add_argument(
+        "--whisper-transcribe",
+        action="store_true",
+        help="After publishing original audio, use Whisper only when platform subtitles are unavailable",
+    )
     parser.add_argument("--summarize", action="store_true", help="Use concise summary mode instead of faithful transcript mode")
     parser.add_argument("--force-transcribe", action="store_true", help="Ignore platform subtitles and run Faster-Whisper")
     parser.add_argument("--json", action="store_true", help="Print the full result as JSON")
@@ -62,6 +67,7 @@ def main() -> int:
             use_original_audio=args.use_original_audio,
             summarize=args.summarize,
             force_transcribe=args.force_transcribe,
+            whisper_transcribe=args.whisper_transcribe,
             scripts_dir=str(output_root / "scripts"),
             transcripts_dir=str(output_root / "transcripts"),
             audio_dir=str(output_root / "audio"),

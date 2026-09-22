@@ -8,6 +8,7 @@ import uuid
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Literal
 
 from .source_adapters import PreparedSource
@@ -31,7 +32,12 @@ class PodcastGenerationServices:
     polish_chunk: Callable[[str, int, int], str | None]
     generate_tags: Callable[[str, str], list[str]]
     chunk_threshold: int
-    prepare_source: Callable[[str, SourceType, StatusCallback | None, bool], PreparedSource] | None = None
+    prepare_source: Callable[
+        [str, SourceType, StatusCallback | None, bool, bool, bool], PreparedSource
+    ] | None = None
+    transcribe_prepared_source: Callable[
+        [PreparedSource, StatusCallback | None, bool], PreparedSource
+    ] | None = None
 
 
 def load_default_services() -> PodcastGenerationServices:
@@ -52,7 +58,7 @@ def load_default_services() -> PodcastGenerationServices:
         polish_chunk,
     )
     from services.tts import generate_audio_sync
-    from services.podcast_sources import prepare_source
+    from services.podcast_sources import prepare_source, transcribe_prepared_source
 
     return PodcastGenerationServices(
         extract_content=extract_content,
@@ -67,6 +73,7 @@ def load_default_services() -> PodcastGenerationServices:
         generate_tags=generate_tags,
         chunk_threshold=CHUNK_THRESHOLD,
         prepare_source=prepare_source,
+        transcribe_prepared_source=transcribe_prepared_source,
     )
 
 
@@ -80,6 +87,7 @@ class PodcastGenerationOptions:
     use_original_audio: bool = False
     summarize: bool = False
     force_transcribe: bool = False
+    whisper_transcribe: bool = False
     scripts_dir: str = "static/scripts"
     transcripts_dir: str = "static/transcripts"
     audio_dir: str = "static/audio"
@@ -291,6 +299,48 @@ def normalize_audio_for_podcast(audio_filename: str, audio_dir: str) -> str:
     )
 
 
+def normalize_original_audio_for_podcast(audio_filename: str, audio_dir: str) -> list[str]:
+    """Normalize original audio, splitting long recordings for static hosting limits."""
+    try:
+        return [normalize_audio_for_podcast(audio_filename, audio_dir)]
+    except RuntimeError as exc:
+        if "超过 Cloudflare Pages 限制" not in str(exc):
+            raise
+
+    stem = os.path.splitext(audio_filename)[0]
+    oversized_path = os.path.join(audio_dir, f"{stem}.mp3")
+    if not os.path.exists(oversized_path):
+        raise RuntimeError("原始音频压缩后文件不存在，无法自动分段。")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("未找到 ffmpeg，无法将长原始音频自动分段。")
+    pattern = os.path.join(audio_dir, f"{stem}_part%03d.mp3")
+    result = subprocess.run(
+        [
+            ffmpeg, "-y", "-i", oversized_path,
+            "-map", "0:a:0", "-c", "copy",
+            "-f", "segment", "-segment_time", "2400",
+            "-reset_timestamps", "1", pattern,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"长原始音频自动分段失败：{detail[-500:]}")
+
+    part_paths = sorted(
+        path for path in Path(audio_dir).glob(f"{stem}_part*.mp3") if path.is_file()
+    )
+    if not part_paths or any(path.stat().st_size > MAX_PAGES_AUDIO_BYTES for path in part_paths):
+        raise RuntimeError("长原始音频分段后仍超过 Cloudflare Pages 限制。")
+    os.remove(oversized_path)
+    return [path.name for path in part_paths]
+
+
 def import_prepared_audio(media_path: str, audio_dir: str) -> str:
     os.makedirs(audio_dir, exist_ok=True)
     suffix = os.path.splitext(media_path)[1] or ".mp3"
@@ -350,6 +400,7 @@ def _extract_failure_message(source_type: SourceType) -> str:
 def generate_podcast(
     options: PodcastGenerationOptions,
     on_status: StatusCallback | None = None,
+    on_original_audio_ready: Callable[[list[GeneratedPodcastItem]], None] | None = None,
 ) -> PodcastGenerationResult:
     services = options.services or load_default_services()
     source_url = options.source if options.source_type in ("url", "youtube", "douyin", "bilibili", "wechat") else None
@@ -363,6 +414,8 @@ def generate_podcast(
                 options.source_type,
                 on_status,
                 options.force_transcribe,
+                options.use_original_audio,
+                not options.use_original_audio,
             )
             text = prepared.text
             thumbnail_url = prepared.thumbnail_url
@@ -374,17 +427,80 @@ def generate_podcast(
         if getattr(exc, "error_code", None):
             raise
         raise ValueError(str(exc) or _extract_failure_message(options.source_type)) from exc
-    if not text:
-        raise ValueError(_extract_failure_message(options.source_type))
-
     title = options.title.strip()
     if not title:
         title = (prepared.title if prepared else "").strip()
-        if not title:
+        if not title and text:
             _notify(on_status, "extracting", "正在生成标题...")
             title = services.generate_title(text)
+        if not title:
+            title = "未命名原始音频"
 
     image_url = download_thumbnail(thumbnail_url, options.images_dir)
+    original_audio_filenames: list[str] = []
+    original_audio_items: list[GeneratedPodcastItem] = []
+    if options.use_original_audio and options.source_type in ("youtube", "douyin", "bilibili"):
+        _notify(on_status, "generating_audio", "正在准备原始音频...")
+        original_audio_filename = (
+            import_prepared_audio(prepared.media_path, options.audio_dir)
+            if prepared and prepared.media_path
+            else services.download_youtube_audio(options.source, options.audio_dir)
+        )
+        if not original_audio_filename:
+            raise RuntimeError("原始音频下载失败，请检查链接。")
+        _notify(on_status, "generating_audio", "正在压缩原始音频为 96kbps mono...")
+        original_audio_filenames = normalize_original_audio_for_podcast(
+            original_audio_filename, options.audio_dir,
+        )
+        total_audio_parts = len(original_audio_filenames)
+        for index, filename in enumerate(original_audio_filenames):
+            item_title = title if total_audio_parts == 1 else f"{title}（第 {index + 1}/{total_audio_parts} 段）"
+            original_audio_item = _make_item(
+                title=item_title,
+                source_text=text or "无可用字幕或 AI 字幕。",
+                script="",
+                script_url="",
+                transcript_url="",
+                audio_filename=filename,
+                base_url=options.base_url,
+                image_url=image_url,
+                tags=[],
+                audio_dir=options.audio_dir,
+            )
+            original_audio_items.append(original_audio_item)
+            _notify(on_status, "generating_audio", f"原始音频第 {index + 1}/{total_audio_parts} 段已就绪，正在优先发布...", {
+                "label": "原始音频" if total_audio_parts == 1 else f"原始音频（第 {index + 1}/{total_audio_parts} 段）",
+                "url": original_audio_item.audio_url,
+            })
+        if on_original_audio_ready:
+            on_original_audio_ready(original_audio_items)
+
+        if not text and (options.whisper_transcribe or options.force_transcribe):
+            if not prepared or not services.transcribe_prepared_source:
+                raise RuntimeError("当前来源不支持 Whisper 后台转录。")
+            prepared = services.transcribe_prepared_source(
+                prepared, on_status, options.force_transcribe,
+            )
+            text = prepared.text
+
+        if not text:
+            return PodcastGenerationResult(
+                title=title,
+                source_url=source_url,
+                source_type=options.source_type,
+                transcript_url="",
+                article_script_url="",
+                article_word_count=0,
+                article_summary="无可用字幕或 AI 字幕。",
+                image_url=image_url,
+                transcript_source=prepared.transcript_source if prepared else "unavailable",
+                items=original_audio_items,
+                warnings=prepared.warnings if prepared else ["无可用字幕或 AI 字幕。"],
+            )
+
+    if not text:
+        raise ValueError(_extract_failure_message(options.source_type))
+
     transcript_url = save_transcript(
         title,
         text,
@@ -421,31 +537,24 @@ def generate_podcast(
         article_script_url = script_url
         article_word_count = len(script)
         article_summary = _article_summary(script)
-        _notify(on_status, "generating_audio", "正在下载原始音频...", {
+        _notify(on_status, "processing", "原始音频已发布，正在生成知识库文章...", {
             "label": script_label,
             "url": script_url,
         })
-        audio_filename = (
-            import_prepared_audio(prepared.media_path, options.audio_dir)
-            if prepared and prepared.media_path
-            else services.download_youtube_audio(options.source, options.audio_dir)
-        )
-        if not audio_filename:
-            raise RuntimeError("原始音频下载失败，请检查链接。")
-        _notify(on_status, "generating_audio", "正在压缩音频为 96kbps mono...")
-        audio_filename = normalize_audio_for_podcast(audio_filename, options.audio_dir)
-        items.append(_make_item(
-            title=title,
-            source_text=text,
-            script=script,
-            script_url=script_url,
-            transcript_url=transcript_url,
-            audio_filename=audio_filename,
-            base_url=options.base_url,
-            image_url=image_url,
-            tags=tags,
-            audio_dir=options.audio_dir,
-        ))
+        for index, audio_filename in enumerate(original_audio_filenames):
+            item_title = title if len(original_audio_filenames) == 1 else f"{title}（第 {index + 1}/{len(original_audio_filenames)} 段）"
+            items.append(_make_item(
+                title=item_title,
+                source_text=text,
+                script=script,
+                script_url=script_url,
+                transcript_url=transcript_url,
+                audio_filename=audio_filename,
+                base_url=options.base_url,
+                image_url=image_url,
+                tags=tags,
+                audio_dir=options.audio_dir,
+            ))
     elif options.summarize:
         _notify(on_status, "processing", "正在生成摘要版播客文稿...")
         result = services.distill_and_translate(text)

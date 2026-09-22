@@ -30,6 +30,10 @@ STAGE_MAP = {
     "publishing": "publishing",
 }
 
+
+class PodcastPublishError(RuntimeError):
+    error_code = "rss_publish_failed"
+
 DEFAULT_STAGE_TIMEOUTS = {
     "resolving": 3 * 60,
     "downloading": 30 * 60,
@@ -38,6 +42,7 @@ DEFAULT_STAGE_TIMEOUTS = {
     "generating_audio": 30 * 60,
     "publishing": 15 * 60,
 }
+PUBLISH_PROCESS_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_PROCESS_TIMEOUT_SECONDS", "900"))
 
 
 def start() -> None:
@@ -246,6 +251,7 @@ def _run(job_id: str) -> dict:
     if not job:
         return {"ok": False, "error": "job not found"}
     options = job.get("options") or {}
+    published_audio_filenames: set[str] = set()
 
     def on_status(status: str, message: str, file: dict | None = None):
         previous = db.get_podcast_job(job_id)
@@ -262,6 +268,20 @@ def _run(job_id: str) -> dict:
             db.append_podcast_job_file(job_id, file)
 
     try:
+        def on_original_audio_ready(items) -> None:
+            for item in items:
+                add_episode(
+                    title=item.title,
+                    description=item.description,
+                    audio_filename=item.audio_filename,
+                    audio_length=item.audio_length,
+                    base_url=options.get("base_url", "http://localhost:8000"),
+                    episode_image=item.image_url,
+                    audio_mime=item.audio_mime,
+                )
+                published_audio_filenames.add(item.audio_filename)
+            _publish_original_audio(job_id)
+
         result = generate_podcast(
             PodcastGenerationOptions(
                 source=job["source_url"],
@@ -272,11 +292,15 @@ def _run(job_id: str) -> dict:
                 use_original_audio=bool(options.get("use_original_audio")),
                 summarize=bool(options.get("summarize")),
                 force_transcribe=bool(options.get("force_transcribe")),
+                whisper_transcribe=bool(options.get("whisper_transcribe")),
             ),
             on_status=on_status,
+            on_original_audio_ready=on_original_audio_ready,
         )
 
         for item in result.items:
+            if item.audio_filename in published_audio_filenames:
+                continue
             add_episode(
                 title=item.title,
                 description=item.description,
@@ -293,8 +317,8 @@ def _run(job_id: str) -> dict:
             source_url=result.source_url,
             source_type=result.source_type,
             summary=result.article_summary or primary.description,
-            article_md_path=result.article_script_url or primary.script_url,
-            transcript_path=result.transcript_url,
+            article_md_path=result.article_script_url or primary.script_url or None,
+            transcript_path=result.transcript_url or None,
             audio_url=primary.audio_url,
             audio_length=primary.audio_length,
             image_url=result.image_url or primary.image_url,
@@ -302,7 +326,8 @@ def _run(job_id: str) -> dict:
         )
         if result.tags:
             db.update_tags(article_id, result.tags)
-        threading.Thread(target=_remember, args=(article_id,), daemon=True).start()
+        if result.article_script_url:
+            threading.Thread(target=_remember, args=(article_id,), daemon=True).start()
 
         result_payload = {
             "title": result.title,
@@ -310,6 +335,7 @@ def _run(job_id: str) -> dict:
             "transcript_source": result.transcript_source,
             "warnings": result.warnings,
             "items": [item.__dict__ for item in result.items],
+            "audio_published_early": bool(published_audio_filenames),
         }
         _publish(job_id, result_payload)
         _sync_inbox_status(job_id, "done")
@@ -341,15 +367,16 @@ def _publish(job_id: str, result_payload: dict) -> None:
     result_payload.pop("publish_error", None)
     pages_url = os.getenv("GITHUB_PAGES_URL", "").rstrip("/")
     if not pages_url:
+        message = _completion_message(result_payload, remote=False)
         db.update_podcast_job(
             job_id,
             status="done",
             stage="done",
-            message="内容生成完成；未配置远程 RSS 发布地址。",
+            message=message,
             result_json=json.dumps(result_payload, ensure_ascii=False),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-        db.add_podcast_job_event(job_id, "completed", "done", "内容生成完成。")
+        db.add_podcast_job_event(job_id, "completed", "done", message)
         return
 
     db.update_podcast_job(
@@ -364,21 +391,22 @@ def _publish(job_id: str, result_payload: dict) -> None:
             [sys.executable, "scripts/publish_to_pages.py"],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=PUBLISH_PROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         if publish.returncode != 0:
             raise RuntimeError((publish.stderr or publish.stdout or "未知发布错误").strip())
         result_payload["rss_url"] = f"{pages_url}/podcast.xml"
+        message = _completion_message(result_payload, remote=True)
         db.update_podcast_job(
             job_id,
             status="done",
             stage="done",
-            message="全部完成，已发布到 RSS。",
+            message=message,
             result_json=json.dumps(result_payload, ensure_ascii=False),
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-        db.add_podcast_job_event(job_id, "completed", "done", "全部完成，已发布到 RSS。")
+        db.add_podcast_job_event(job_id, "completed", "done", message)
     except Exception as exc:
         result_payload["publish_error"] = str(exc)
         db.update_podcast_job(
@@ -392,6 +420,42 @@ def _publish(job_id: str, result_payload: dict) -> None:
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
         db.add_podcast_job_event(job_id, "failed", "publishing", str(exc), {"error_code": "rss_publish_failed"})
+
+
+def _publish_original_audio(job_id: str) -> None:
+    message = "原始音频已加入 RSS，正在后台处理逐字稿和知识库文章..."
+    db.update_podcast_job(
+        job_id,
+        stage="publishing",
+        message=message,
+        heartbeat_at=_now(),
+    )
+    db.add_podcast_job_event(job_id, "audio_published", "publishing", message)
+    pages_url = os.getenv("GITHUB_PAGES_URL", "").rstrip("/")
+    if pages_url:
+        publish = subprocess.run(
+            [sys.executable, "scripts/publish_to_pages.py"],
+            capture_output=True,
+            text=True,
+            timeout=PUBLISH_PROCESS_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if publish.returncode != 0:
+            detail = (publish.stderr or publish.stdout or "未知发布错误").strip()
+            raise PodcastPublishError(f"原始音频已加入本地 RSS，但远程发布失败：{detail}")
+    db.update_podcast_job(
+        job_id,
+        stage="audio_ready",
+        message=message,
+        heartbeat_at=_now(),
+    )
+
+
+def _completion_message(result_payload: dict, *, remote: bool) -> str:
+    if result_payload.get("transcript_source") == "unavailable":
+        suffix = "已发布到 RSS。" if remote else "已加入本地 RSS。"
+        return f"原始音频{suffix}无可用字幕或 AI 字幕，未生成逐字稿和知识库文章。"
+    return "全部完成，已发布到 RSS。" if remote else "内容生成完成；未配置远程 RSS 发布地址。"
 
 
 def _remember(article_id: str) -> None:

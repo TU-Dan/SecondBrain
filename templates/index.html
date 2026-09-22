@@ -613,6 +613,12 @@
                             使用原始音频（不生成 TTS，直接用视频音频）
                         </label>
                     </div>
+                    <div class="form-group" id="whisper-transcribe-group" style="display:none">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500">
+                            <input type="checkbox" name="whisper_transcribe" id="whisper-transcribe" value="true" style="width:auto;accent-color:var(--accent)">
+                            Whisper 生成逐字稿和知识库文章（耗时较长）
+                        </label>
+                    </div>
                     <div class="form-group">
                         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500">
                             <input type="checkbox" name="summarize" value="true" style="width:auto;accent-color:var(--accent)">
@@ -874,6 +880,10 @@
 
         function toggleVoice(useOriginal) {
             document.getElementById('voice-group-url').style.display = useOriginal ? 'none' : 'block';
+            document.getElementById('whisper-transcribe-group').style.display = useOriginal ? 'block' : 'none';
+            if (!useOriginal) {
+                document.getElementById('whisper-transcribe').checked = false;
+            }
         }
 
         document.getElementById('url-form').addEventListener('submit', e => submitForm(e, '/generate/url'));
