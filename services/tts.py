@@ -22,6 +22,7 @@ MINIMAX_REQUEST_TIMEOUT_SECONDS = 120
 
 # edge-tts struggles with very long inputs; chunk at this many chars
 TTS_CHUNK_SIZE = 2000
+TTS_REQUEST_TIMEOUT_SECONDS = 120
 
 
 def clean_text_for_tts(text: str) -> str:
@@ -122,43 +123,48 @@ async def generate_audio(text: str, voice: str = DEFAULT_VOICE, output_dir: str 
 
     print(f"[TTS] {len(chunks)} chunk(s), sizes: {[len(c) for c in chunks]}")
 
-    async def synth_chunk(chunk: str, out: str) -> bool:
-        """Synthesize one chunk with retries. Returns True on success."""
+    async def synth_chunk(chunk: str, out: str) -> None:
+        """Synthesize one chunk with bounded retries."""
+        last_failure = "语音服务未返回音频"
         for attempt in range(3):
             try:
                 communicate = edge_tts.Communicate(chunk, voice)
-                await communicate.save(out)
+                await asyncio.wait_for(communicate.save(out), timeout=TTS_REQUEST_TIMEOUT_SECONDS)
                 # Verify non-empty output
                 if os.path.getsize(out) > 0:
-                    return True
+                    return
                 print(f"[TTS] Chunk produced empty file, attempt {attempt + 1}/3")
+            except asyncio.TimeoutError:
+                last_failure = f"单段合成超时（{TTS_REQUEST_TIMEOUT_SECONDS} 秒）"
+                print(f"[TTS] Chunk timed out (attempt {attempt + 1}/3)")
             except Exception as e:
+                if getattr(e, "status", None) == 403:
+                    if os.path.exists(out):
+                        os.remove(out)
+                    raise RuntimeError("TTS 语音服务拒绝连接（HTTP 403）。请更新 edge-tts 后重试。") from e
+                last_failure = type(e).__name__
                 print(f"[TTS] Chunk failed (attempt {attempt + 1}/3): {e}")
-            await asyncio.sleep(1 + attempt)
+            if os.path.exists(out):
+                os.remove(out)
+            if attempt < 2:
+                await asyncio.sleep(1 + attempt)
         # Log the problematic chunk for debugging
         print(f"[TTS] Giving up on chunk ({len(chunk)} chars): {chunk[:80]!r}...")
-        return False
+        raise RuntimeError(f"TTS 语音合成失败：{last_failure}，重试 3 次仍未成功。")
 
     if len(chunks) == 1:
-        ok = await synth_chunk(chunks[0], output_path)
-        if not ok:
-            raise RuntimeError(f"TTS failed after retries ({len(chunks[0])} chars)")
+        await synth_chunk(chunks[0], output_path)
     else:
         parts = []
-        for i, chunk in enumerate(chunks):
+        for chunk in chunks:
             tmp_path = os.path.join(output_dir, f"_tmp_{uuid.uuid4().hex}.mp3")
-            ok = await synth_chunk(chunk, tmp_path)
-            if ok:
+            try:
+                await synth_chunk(chunk, tmp_path)
                 with open(tmp_path, 'rb') as f:
                     parts.append(f.read())
-                os.remove(tmp_path)
-            else:
-                # Skip this chunk rather than crash the whole job
-                print(f"[TTS] Skipping chunk {i + 1}/{len(chunks)}")
+            finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
-        if not parts:
-            raise RuntimeError("TTS failed: all chunks produced no audio")
         with open(output_path, 'wb') as f:
             for part in parts:
                 f.write(part)
