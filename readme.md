@@ -154,6 +154,7 @@ python -m pip install -r requirements.txt
 ## 开发验证
 
 ```bash
+python -m unittest discover -s tests -p 'test_edge_tts.py' -v
 python -m unittest discover -s tests -p 'test_podcast_pipeline.py' -v
 python -m unittest discover -s tests -p 'test_publish_to_pages.py' -v
 python -m unittest discover -s tests -p 'test_article_content.py' -v
