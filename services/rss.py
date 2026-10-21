@@ -51,6 +51,10 @@ def _build_feed(base_url: str, episodes: list, self_url: str = None) -> object:
     fg.podcast.itunes_category('Technology')
     fg.podcast.itunes_image(CHANNEL_IMAGE)
     fg.podcast.itunes_owner(name=CHANNEL_AUTHOR, email=CHANNEL_EMAIL)
+    fg.lastBuildDate(max(
+        (datetime.fromisoformat(ep['published']) for ep in episodes),
+        default=datetime(1970, 1, 1, tzinfo=timezone.utc),
+    ))
 
     # feedgen serializes entries in reverse insertion order, so add oldest first
     # to keep the final RSS XML ordered newest first.

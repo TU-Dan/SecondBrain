@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -42,7 +43,7 @@ DEFAULT_STAGE_TIMEOUTS = {
     "generating_audio": 30 * 60,
     "publishing": 15 * 60,
 }
-PUBLISH_PROCESS_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_PROCESS_TIMEOUT_SECONDS", "900"))
+PUBLISH_PROCESS_TIMEOUT_SECONDS = int(os.getenv("PUBLISH_PROCESS_TIMEOUT_SECONDS", "840"))
 
 
 def start() -> None:
@@ -206,6 +207,39 @@ def _stage_timeout_seconds(stage: str) -> int:
         return DEFAULT_STAGE_TIMEOUTS.get(stage, 30 * 60)
 
 
+def _publish_timeout_seconds() -> int:
+    stage_timeout = _stage_timeout_seconds("publishing")
+    return min(PUBLISH_PROCESS_TIMEOUT_SECONDS, max(1, stage_timeout - 60)) if stage_timeout else PUBLISH_PROCESS_TIMEOUT_SECONDS
+
+
+def _run_publisher(timeout_seconds: int) -> subprocess.CompletedProcess:
+    command = [sys.executable, "scripts/publish_to_pages.py"]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        raise subprocess.TimeoutExpired(command, timeout_seconds)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def _seconds_since(timestamp: str | None) -> float:
     if not timestamp:
         return 0
@@ -231,6 +265,11 @@ def _mark_cancelled(job_id: str) -> None:
 
 
 def _mark_timed_out(job_id: str, stage: str, timeout_seconds: int) -> None:
+    job = db.get_podcast_job(job_id)
+    if stage == "publishing" and job and job.get("result"):
+        detail = f"RSS 发布超过 {timeout_seconds // 60} 分钟，已停止；本地文章和音频已保留，可重试发布。"
+        _mark_publish_failed(job_id, job["result"], detail)
+        return
     message = f"任务在 {stage} 阶段超过 {timeout_seconds // 60} 分钟，已自动终止。"
     db.update_podcast_job(
         job_id,
@@ -338,6 +377,15 @@ def _run(job_id: str) -> dict:
             "audio_published_early": bool(published_audio_filenames),
         }
         _publish(job_id, result_payload)
+        published_job = db.get_podcast_job(job_id)
+        if published_job and published_job["status"] == "failed":
+            _sync_inbox_status(job_id, "pending")
+            return {
+                "ok": False,
+                "job_id": job_id,
+                "error_code": published_job["error_code"],
+                "error": published_job["error_message"],
+            }
         _sync_inbox_status(job_id, "done")
         return {"ok": True, "job_id": job_id, "result": result_payload}
     except Exception as exc:
@@ -384,16 +432,11 @@ def _publish(job_id: str, result_payload: dict) -> None:
         stage="publishing",
         message="内容生成完成，正在发布到 RSS...",
         heartbeat_at=_now(),
+        result_json=json.dumps(result_payload, ensure_ascii=False),
     )
     db.add_podcast_job_event(job_id, "progress", "publishing", "内容生成完成，正在发布到 RSS...")
     try:
-        publish = subprocess.run(
-            [sys.executable, "scripts/publish_to_pages.py"],
-            capture_output=True,
-            text=True,
-            timeout=PUBLISH_PROCESS_TIMEOUT_SECONDS,
-            check=False,
-        )
+        publish = _run_publisher(_publish_timeout_seconds())
         if publish.returncode != 0:
             raise RuntimeError((publish.stderr or publish.stdout or "未知发布错误").strip())
         result_payload["rss_url"] = f"{pages_url}/podcast.xml"
@@ -408,18 +451,27 @@ def _publish(job_id: str, result_payload: dict) -> None:
         )
         db.add_podcast_job_event(job_id, "completed", "done", message)
     except Exception as exc:
-        result_payload["publish_error"] = str(exc)
-        db.update_podcast_job(
-            job_id,
-            status="failed",
-            stage="publishing",
-            message=f"内容已生成，但 RSS 发布失败：{exc}",
-            result_json=json.dumps(result_payload, ensure_ascii=False),
-            error_code="rss_publish_failed",
-            error_message=str(exc),
-            finished_at=datetime.now(timezone.utc).isoformat(),
+        detail = (
+            f"RSS 发布超过 {exc.timeout // 60:g} 分钟，已停止；本地文章和音频已保留，可重试发布。"
+            if isinstance(exc, subprocess.TimeoutExpired)
+            else str(exc)
         )
-        db.add_podcast_job_event(job_id, "failed", "publishing", str(exc), {"error_code": "rss_publish_failed"})
+        _mark_publish_failed(job_id, result_payload, detail)
+
+
+def _mark_publish_failed(job_id: str, result_payload: dict, detail: str) -> None:
+    result_payload["publish_error"] = detail
+    db.update_podcast_job(
+        job_id,
+        status="failed",
+        stage="publishing",
+        message=f"内容已生成，但 RSS 发布失败：{detail}",
+        result_json=json.dumps(result_payload, ensure_ascii=False),
+        error_code="rss_publish_failed",
+        error_message=detail,
+        finished_at=_now(),
+    )
+    db.add_podcast_job_event(job_id, "failed", "publishing", detail, {"error_code": "rss_publish_failed"})
 
 
 def _publish_original_audio(job_id: str) -> None:
@@ -433,13 +485,7 @@ def _publish_original_audio(job_id: str) -> None:
     db.add_podcast_job_event(job_id, "audio_published", "publishing", message)
     pages_url = os.getenv("GITHUB_PAGES_URL", "").rstrip("/")
     if pages_url:
-        publish = subprocess.run(
-            [sys.executable, "scripts/publish_to_pages.py"],
-            capture_output=True,
-            text=True,
-            timeout=PUBLISH_PROCESS_TIMEOUT_SECONDS,
-            check=False,
-        )
+        publish = _run_publisher(_publish_timeout_seconds())
         if publish.returncode != 0:
             detail = (publish.stderr or publish.stdout or "未知发布错误").strip()
             raise PodcastPublishError(f"原始音频已加入本地 RSS，但远程发布失败：{detail}")
@@ -469,6 +515,8 @@ def _remember(article_id: str) -> None:
 
 def _infer_error_code(message: str) -> str:
     lower = message.lower()
+    if lower.startswith("tts ") or "语音合成" in message or "语音服务" in message:
+        return "tts_failed"
     if "短链" in message or "过期" in message:
         return "expired_share_link"
     if "cookie" in lower or "登录" in message or "验证" in message:

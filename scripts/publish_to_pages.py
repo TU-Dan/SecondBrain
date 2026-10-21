@@ -47,7 +47,7 @@ HTTP_USER_AGENT = "Mozilla/5.0 SecondBrainPodcastPublisher/1.0"
 
 
 def remove_worktree():
-    """Remove the temporary publish checkout, retrying transient macOS rmtree races."""
+    """Remove an incomplete publish checkout, retrying transient macOS rmtree races."""
     path = Path(WORKTREE)
     if not path.exists():
         return
@@ -110,6 +110,30 @@ def run_with_https_fallback(cmd: list[str], cwd: Path | str | None = None) -> st
             return run(retry, cwd=cwd)
         except SystemExit:
             raise exc
+
+
+def prepare_worktree() -> None:
+    """Reuse the publisher checkout so historical audio is not cloned on every run."""
+    checkout = Path(WORKTREE)
+    if checkout.exists():
+        if not (checkout / ".git").is_dir():
+            raise RuntimeError(f"Publish checkout is not a Git repository: {checkout}")
+        if not run(["git", "rev-parse", "--verify", "HEAD"], check=False, cwd=checkout):
+            remove_worktree()
+        else:
+            remote = run(["git", "remote", "get-url", "origin"], cwd=checkout)
+            branch = run(["git", "branch", "--show-current"], cwd=checkout)
+            if remote != PAGES_REPO or branch != PAGES_BRANCH:
+                raise RuntimeError(f"Publish checkout points to {remote}#{branch}, expected {PAGES_REPO}#{PAGES_BRANCH}")
+            run_with_https_fallback(["git", "fetch", PAGES_REPO, PAGES_BRANCH], cwd=checkout)
+            run(["git", "merge", "--ff-only", "FETCH_HEAD"], cwd=checkout)
+            return
+
+    run_with_https_fallback([
+        "git", "clone", "--depth", "1", "--branch", PAGES_BRANCH,
+        "--single-branch", PAGES_REPO, WORKTREE,
+    ])
+    run(["git", "remote", "set-url", "origin", PAGES_REPO], cwd=checkout)
 
 
 def branch_exists_remote() -> bool:
@@ -324,21 +348,7 @@ def publish() -> str:
     if not branch_exists_remote():
         init_gh_pages()
 
-    # Clean up any leftover checkout
-    remove_worktree()
-
-    run_with_https_fallback([
-        "git",
-        "clone",
-        "--depth",
-        "1",
-        "--branch",
-        PAGES_BRANCH,
-        "--single-branch",
-        PAGES_REPO,
-        WORKTREE,
-    ])
-    run(["git", "remote", "set-url", "origin", PAGES_REPO], cwd=WORKTREE)
+    prepare_worktree()
 
     try:
         audio_src = ROOT / "static" / "audio"
@@ -404,7 +414,8 @@ def publish() -> str:
         wait_for_remote_rss(expected_rss)
 
     finally:
-        remove_worktree()
+        if Path(WORKTREE).exists() and not (Path(WORKTREE) / ".git").exists():
+            remove_worktree()
 
     return f"{PAGES_URL}/podcast.xml"
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -392,6 +393,22 @@ class GeneratorPreparedSourceTests(unittest.TestCase):
 
 
 class PodcastJobPersistenceTests(unittest.TestCase):
+    def test_publisher_timeout_stops_child_process_group(self):
+        process = Mock(pid=12345, returncode=-15)
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired("publisher", 1),
+            ("", ""),
+        ]
+        with (
+            patch.object(podcast_jobs.subprocess, "Popen", return_value=process) as popen,
+            patch.object(podcast_jobs.os, "killpg") as killpg,
+            self.assertRaises(subprocess.TimeoutExpired),
+        ):
+            podcast_jobs._run_publisher(1)
+
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        killpg.assert_called_once_with(12345, podcast_jobs.signal.SIGTERM)
+
     def test_isolated_runner_can_import_content_to_podcast_package(self):
         result = subprocess.run(
             [sys.executable, "-m", "services.podcast_job_runner", "missing-job"],
@@ -477,6 +494,47 @@ class PodcastJobPersistenceTests(unittest.TestCase):
             finally:
                 db.DB_PATH = original_path
 
+    def test_worker_reports_publish_failure_after_generating_content(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job("https://example.com", "url", {})
+                item = SimpleNamespace(
+                    title="测试播客", description="描述", audio_filename="test.mp3",
+                    audio_length=10, image_url=None, audio_mime="audio/mpeg",
+                    audio_url="/static/audio/test.mp3", script_url="", transcript_url="",
+                    word_count=0,
+                )
+                generated = SimpleNamespace(
+                    title="测试播客", source_url="https://example.com", source_type="url",
+                    article_summary="描述", article_script_url="", transcript_url="",
+                    image_url=None, article_word_count=0, transcript_source="article",
+                    warnings=[], tags=[], items=[item],
+                )
+
+                def fail_publish(publishing_job_id, result_payload):
+                    db.update_podcast_job(
+                        publishing_job_id, status="failed", stage="publishing",
+                        error_code="rss_publish_failed", error_message="发布超时",
+                        result_json=json.dumps(result_payload),
+                    )
+
+                with (
+                    patch.object(podcast_jobs, "generate_podcast", return_value=generated),
+                    patch.object(podcast_jobs, "add_episode"),
+                    patch.object(db, "add_article", return_value="article-id"),
+                    patch.object(podcast_jobs, "_publish", side_effect=fail_publish),
+                ):
+                    result = podcast_jobs.run_next()
+
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["error_code"], "rss_publish_failed")
+                self.assertEqual(db.get_podcast_job(job_id)["result"]["title"], "测试播客")
+            finally:
+                db.DB_PATH = original_path
+
     def test_original_audio_is_added_to_rss_before_background_enrichment(self):
         original_path = db.DB_PATH
         with tempfile.TemporaryDirectory() as tmp:
@@ -549,7 +607,7 @@ class PodcastJobPersistenceTests(unittest.TestCase):
                 db.claim_podcast_job(job_id)
                 failed_publish = SimpleNamespace(returncode=1, stderr="publish failed", stdout="")
                 with (
-                    patch.object(podcast_jobs.subprocess, "run", return_value=failed_publish),
+                    patch.object(podcast_jobs, "_run_publisher", return_value=failed_publish),
                     patch.dict(os.environ, {"GITHUB_PAGES_URL": "https://podcast.example.com"}),
                 ):
                     podcast_jobs._publish(job_id, {"title": "已生成"})
@@ -557,6 +615,58 @@ class PodcastJobPersistenceTests(unittest.TestCase):
                 saved = db.get_podcast_job(job_id)
                 self.assertEqual(saved["status"], "failed")
                 self.assertEqual(saved["stage"], "publishing")
+                self.assertEqual(saved["error_code"], "rss_publish_failed")
+                self.assertEqual(saved["result"]["title"], "已生成")
+            finally:
+                db.DB_PATH = original_path
+
+    def test_publish_saves_generated_result_before_external_command(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job("https://example.com", "url", {})
+                db.claim_podcast_job(job_id)
+                result = {"title": "已生成", "items": [{"audio_filename": "episode.mp3"}]}
+                observed = {}
+
+                def timed_out(timeout_seconds):
+                    observed["result"] = db.get_podcast_job(job_id)["result"]
+                    observed["timeout"] = timeout_seconds
+                    raise subprocess.TimeoutExpired("publisher", timeout_seconds)
+
+                with (
+                    patch.object(podcast_jobs, "_run_publisher", side_effect=timed_out),
+                    patch.dict(os.environ, {"GITHUB_PAGES_URL": "https://podcast.example.com"}),
+                ):
+                    podcast_jobs._publish(job_id, result)
+
+                saved = db.get_podcast_job(job_id)
+                self.assertEqual(observed["result"]["title"], "已生成")
+                self.assertLess(observed["timeout"], podcast_jobs._stage_timeout_seconds("publishing"))
+                self.assertEqual(saved["error_code"], "rss_publish_failed")
+                self.assertEqual(saved["result"]["items"][0]["audio_filename"], "episode.mp3")
+            finally:
+                db.DB_PATH = original_path
+
+    def test_publishing_watchdog_preserves_saved_result_for_retry(self):
+        original_path = db.DB_PATH
+        with tempfile.TemporaryDirectory() as tmp:
+            db.DB_PATH = str(Path(tmp) / "knowledge.db")
+            try:
+                db.init_db()
+                job_id = db.create_podcast_job("https://example.com", "url", {})
+                db.claim_podcast_job(job_id)
+                db.update_podcast_job(
+                    job_id,
+                    stage="publishing",
+                    result_json=json.dumps({"title": "已生成"}),
+                )
+
+                podcast_jobs._mark_timed_out(job_id, "publishing", 900)
+
+                saved = db.get_podcast_job(job_id)
                 self.assertEqual(saved["error_code"], "rss_publish_failed")
                 self.assertEqual(saved["result"]["title"], "已生成")
             finally:
