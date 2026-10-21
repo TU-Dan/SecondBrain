@@ -1,8 +1,12 @@
-import edge_tts
 import asyncio
+import json
 import os
 import re
+import urllib.error
+import urllib.request
 import uuid
+
+import edge_tts
 
 DEFAULT_VOICE = "zh-CN-YunxiNeural"
 
@@ -13,6 +17,8 @@ VOICES = {
     "zh-CN-YunyangNeural": "云扬 (男声·专业)",
     "zh-CN-YunjianNeural": "云健 (男声·成熟)",
 }
+MINIMAX_URL = "https://api.minimax.cn/v1/t2a_v2"
+MINIMAX_REQUEST_TIMEOUT_SECONDS = 120
 
 # edge-tts struggles with very long inputs; chunk at this many chars
 TTS_CHUNK_SIZE = 2000
@@ -95,12 +101,15 @@ def _split_for_tts(text: str, max_chars: int = TTS_CHUNK_SIZE) -> list[str]:
 
 
 async def generate_audio(text: str, voice: str = DEFAULT_VOICE, output_dir: str = "static/audio") -> str:
-    """Generate MP3 from text using edge-tts. Returns the filename."""
+    """Generate MP3 from text using the selected voice provider."""
     os.makedirs(output_dir, exist_ok=True)
 
     text = clean_text_for_tts(text)
     if not text:
         raise ValueError("Text is empty after cleaning — nothing to synthesize.")
+
+    if voice.startswith("minimax:"):
+        return await asyncio.to_thread(_generate_minimax_audio, text, voice.removeprefix("minimax:"), output_dir)
 
     print(f"[TTS] {len(text)} chars, voice={voice}")
 
@@ -153,6 +162,67 @@ async def generate_audio(text: str, voice: str = DEFAULT_VOICE, output_dir: str 
         with open(output_path, 'wb') as f:
             for part in parts:
                 f.write(part)
+
+    return filename
+
+
+def _generate_minimax_audio(text: str, voice_id: str, output_dir: str) -> str:
+    api_key = os.getenv("MINIMAX_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("MiniMax 语音合成未配置 MINIMAX_API_KEY。")
+    if not voice_id:
+        raise ValueError("MiniMax 音色 ID 不能为空。")
+
+    filename = f"{uuid.uuid4().hex}.mp3"
+    output_path = os.path.join(output_dir, filename)
+    chunks = [
+        chunk[i:i + 3000]
+        for chunk in _split_for_tts(text, max_chars=3000)
+        for i in range(0, len(chunk), 3000)
+    ]
+    if not chunks:
+        raise ValueError("No speakable content found after cleaning.")
+
+    try:
+        with open(output_path, "wb") as audio_file:
+            for chunk in chunks:
+                payload = {
+                    "model": os.getenv("MINIMAX_TTS_MODEL", "speech-2.8-turbo"),
+                    "text": chunk,
+                    "stream": False,
+                    "output_format": "hex",
+                    "voice_setting": {"voice_id": voice_id},
+                    "audio_setting": {"format": "mp3"},
+                }
+                request = urllib.request.Request(
+                    os.getenv("MINIMAX_TTS_URL", MINIMAX_URL),
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=MINIMAX_REQUEST_TIMEOUT_SECONDS) as response:
+                        result = json.load(response)
+                except urllib.error.HTTPError as exc:
+                    raise RuntimeError(f"MiniMax 语音合成请求失败（HTTP {exc.code}）。") from exc
+                except urllib.error.URLError as exc:
+                    raise RuntimeError("MiniMax 语音服务连接失败。") from exc
+
+                base_resp = result.get("base_resp") or {}
+                if base_resp.get("status_code") != 0:
+                    raise RuntimeError(
+                        f"MiniMax 语音合成失败（{base_resp.get('status_code')}：{base_resp.get('status_msg')}）。"
+                    )
+                audio_hex = (result.get("data") or {}).get("audio")
+                if not audio_hex:
+                    raise RuntimeError("MiniMax 语音服务返回空音频。")
+                try:
+                    audio_file.write(bytes.fromhex(audio_hex))
+                except ValueError as exc:
+                    raise RuntimeError("MiniMax 语音服务返回无效音频。") from exc
+    except Exception:
+        os.remove(output_path)
+        raise
 
     return filename
 

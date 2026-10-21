@@ -70,6 +70,8 @@ GITHUB_PAGES_BRANCH=gh-pages
 
 如需知识图谱向量检索，再填写 `VOYAGE_API_KEY` 或 `OPENAI_API_KEY`。不要提交 `.env`。
 
+在 `/generate` 的「链接生成」或「文件生成」中，可从「主播音色」选择 MiniMax。使用前在 `.env` 设置 `MINIMAX_API_KEY`；中国区默认连接 `api.minimax.cn`，国际区可设置 `MINIMAX_TTS_URL=https://api.minimax.io/v1/t2a_v2`。默认语音模型为 `speech-2.8-turbo`，MiniMax 合成会消耗账号额度。
+
 ### 4. 安装播客平台工具
 
 ```bash
