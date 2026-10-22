@@ -13,6 +13,7 @@ const editorPane = document.getElementById('editor-pane');
 const displayTags = document.getElementById('display-tags');
 let revision = '';
 let dirty = false;
+let changeSerial = 0;
 editToggle.disabled = true;
 
 function setStatus(message, state = '') {
@@ -41,15 +42,6 @@ function showTags(values) {
   }
 }
 
-function parsedTags(value) {
-  try {
-    const result = JSON.parse(value || '[]');
-    return Array.isArray(result) ? result.filter(tag => typeof tag === 'string') : [];
-  } catch (_) {
-    return [];
-  }
-}
-
 function asset(url) {
   return typeof url === 'string' && url.startsWith('/static/images/') ? `${BASE}${url}` : url;
 }
@@ -70,22 +62,21 @@ function render() {
 
 async function load() {
   try {
-    const [articleResponse, contentResponse] = await Promise.all([fetch(api), fetch(`${api}/content`)]);
-    if (!articleResponse.ok || !contentResponse.ok) throw new Error('文章不可用');
-    const article = await articleResponse.json();
-    const content = await contentResponse.json();
+    const response = await fetch(`${api}/document`);
+    if (!response.ok) throw new Error('文章不可用');
+    const article = await response.json();
     document.title = `${article.title} · Second Brain`;
     document.getElementById('heading').textContent = article.title || '未命名文章';
     document.getElementById('toolbar-title').textContent = article.title || '未命名文章';
     document.getElementById('source').textContent = article.source_type || '知识笔记';
     document.getElementById('date').textContent = article.created_at ? article.created_at.slice(0, 10) : '';
     title.value = article.title || '';
-    const tagValues = parsedTags(article.tags);
+    const tagValues = article.tags;
     tags.value = tagValues.join('，');
     showTags(tagValues);
-    editor.value = content.content;
-    revision = content.revision;
-    document.getElementById('fallback-note').hidden = !content.fallback;
+    editor.value = article.content;
+    revision = article.revision;
+    document.getElementById('fallback-note').hidden = !article.fallback;
     if (article.image_url) {
       const cover = document.getElementById('cover');
       cover.src = asset(article.image_url);
@@ -131,18 +122,20 @@ async function save() {
   saveButton.disabled = true;
   doneButton.disabled = true;
   setStatus('保存中…');
+  const savedSerial = changeSerial;
   try {
-    const content = await send(`${api}/content`, 'PUT', {content: editor.value, revision});
-    revision = content.revision;
-    await send(api, 'PATCH', {title: newTitle, tags: newTags});
+    const saved = await send(`${api}/document`, 'PUT', {
+      title: newTitle, tags: newTags, content: editor.value, revision
+    });
+    revision = saved.revision;
     document.getElementById('heading').textContent = newTitle;
     document.getElementById('toolbar-title').textContent = newTitle;
     document.title = `${newTitle} · Second Brain`;
     showTags(newTags);
     document.getElementById('fallback-note').hidden = true;
-    dirty = false;
-    setStatus('已保存', 'saved');
-    return true;
+    dirty = changeSerial !== savedSerial;
+    setStatus(dirty ? '有未保存的修改' : '已保存', dirty ? 'dirty' : 'saved');
+    return !dirty;
   } catch (error) {
     setStatus(error.message, 'error');
     return false;
@@ -153,6 +146,7 @@ async function save() {
 }
 
 for (const field of [title, tags, editor]) field.addEventListener('input', () => {
+  changeSerial += 1;
   dirty = true;
   setStatus('有未保存的修改', 'dirty');
 });

@@ -74,11 +74,28 @@ def _retag_untagged():
     print("[retag] Done.")
 
 
+def _knowledge_sync_loop():
+    """Publish new local articles and reconcile changes without overwriting conflicts."""
+    from services.knowledge_sync import synchronize
+    while True:
+        try:
+            result = synchronize(apply=True)
+            changed = {key: len(result[key]) for key in ("new", "pull", "push", "conflicts", "errors")}
+            if any(changed.values()):
+                logging.info("knowledge sync: %s", changed)
+        except Exception:
+            logging.exception("knowledge sync failed; retrying in 60 seconds")
+        threading.Event().wait(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
     init_db()
     threading.Thread(target=_retag_untagged, daemon=True).start()
+    from services.knowledge_sync import enabled as knowledge_sync_enabled
+    if knowledge_sync_enabled():
+        threading.Thread(target=_knowledge_sync_loop, daemon=True).start()
     from services import agent
     from services import podcast_jobs
     agent.start()
@@ -275,6 +292,65 @@ async def get_article_content(article_id: str):
         return JSONResponse({"content": content})
     except FileNotFoundError:
         return JSONResponse({"error": "file not found"}, status_code=404)
+
+
+@app.get("/api/articles/{article_id}/document")
+async def local_get_document(article_id: str):
+    from services import knowledge_document as document
+    from services import knowledge_sync as sync
+    try:
+        if sync.enabled():
+            remote = await asyncio.to_thread(sync.read_canonical, article_id)
+            if remote is not None:
+                return JSONResponse(remote)
+        item = document.read_document(article_id)
+        return JSONResponse(item) if item else JSONResponse({"error": "not found"}, status_code=404)
+    except sync.SyncError as error:
+        return JSONResponse({"error": str(error)}, status_code=503)
+    except (OSError, ValueError):
+        return JSONResponse({"error": "文章正文不可用"}, status_code=404)
+
+
+@app.put("/api/articles/{article_id}/document")
+async def local_put_document(article_id: str, request: Request):
+    from services import knowledge_document as document
+    from services import knowledge_sync as sync
+    try:
+        body = await request.json()
+        if sync.enabled():
+            remote = await asyncio.to_thread(sync.fetch_document, article_id)
+            if remote is not None:
+                saved = await asyncio.to_thread(sync.save_document, article_id, body)
+                try:
+                    await asyncio.to_thread(sync.apply_remote, saved, backup_if_different=True)
+                except Exception:
+                    logging.exception("server saved article %s but local mirror update failed", article_id)
+                    saved["local_mirror_warning"] = "网页已保存，本地副本待同步"
+                return JSONResponse(saved)
+        saved_local = await asyncio.to_thread(document.write_document, article_id, body, source="local")
+        if sync.enabled():
+            try:
+                published = await asyncio.to_thread(sync.publish_article, article_id)
+            except (sync.SyncError, OSError) as error:
+                saved_local["sync_warning"] = f"本地已保存，网页发布待重试：{error}"
+                return JSONResponse(saved_local)
+            try:
+                sync._record(article_id, published["revision"], saved_local["revision"])
+            except Exception:
+                logging.exception("published article %s but local sync state update failed", article_id)
+                published["local_mirror_warning"] = "网页已保存，同步状态待更新"
+            return JSONResponse(published)
+        return JSONResponse(saved_local)
+    except document.DocumentConflict as error:
+        return JSONResponse({"error": str(error)}, status_code=409)
+    except sync.SyncError as error:
+        return JSONResponse({"error": str(error)}, status_code=error.status or 503)
+    except KeyError:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    except ValueError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
+    except OSError:
+        return JSONResponse({"error": "保存失败"}, status_code=500)
 
 
 @app.delete("/api/articles/{article_id}")

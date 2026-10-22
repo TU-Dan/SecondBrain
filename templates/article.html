@@ -1375,6 +1375,8 @@
             'PATCH /api/articles/{articleId}',
             'GET /api/articles/{articleId}/content',
             'POST /api/articles/{articleId}/content',
+            'GET /api/articles/{articleId}/document',
+            'PUT /api/articles/{articleId}/document',
             'PUT /api/articles/{articleId}/tags',
             'POST /api/articles/{articleId}/highlights',
             'GET /api/agent/tasks',
@@ -1383,8 +1385,12 @@
         ]
     };
     let dirty = false;
+    let editSerial = 0;
+    let savePromise = null;
     let saveTimer = null;
     let editMode = false;
+    let documentRevision = '';
+    let currentArticleTitle = {{ article.title | tojson }};
 
     const editor = document.getElementById('editor');
     const preview = document.getElementById('preview');
@@ -1472,6 +1478,7 @@
     }
 
     function markDirty() {
+        editSerial += 1;
         dirty = true;
         document.getElementById('save-status').textContent = '未保存';
         document.getElementById('save-status').className = 'save-status';
@@ -1488,26 +1495,44 @@
     });
 
     async function saveContent() {
+        if (savePromise) {
+            const previous = await savePromise;
+            if (!previous) return false;
+            return dirty ? saveContent() : true;
+        }
         if (!dirty) return true;
+        savePromise = doSaveContent();
+        try { return await savePromise; }
+        finally { savePromise = null; }
+    }
+
+    async function doSaveContent() {
         clearTimeout(saveTimer);
+        const savedSerial = editSerial;
         const btn = document.getElementById('save-btn');
         const status = document.getElementById('save-status');
         btn.disabled = true;
         status.textContent = '保存中...';
         status.className = 'save-status';
         try {
-            const res = await fetch(`/api/articles/${ARTICLE_ID}/content`, {
-                method: 'POST',
+            const res = await fetch(`/api/articles/${ARTICLE_ID}/document`, {
+                method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: editor.value }),
+                body: JSON.stringify({
+                    title: currentArticleTitle,
+                    tags: currentTags,
+                    content: editor.value,
+                    revision: documentRevision,
+                }),
             });
             const data = await res.json();
-            if (data.ok) {
-                dirty = false;
-                status.textContent = '已保存';
-                status.className = 'save-status ok';
+            if (res.ok) {
+                documentRevision = data.revision;
+                dirty = editSerial !== savedSerial;
+                status.textContent = dirty ? '有未保存的修改' : (data.sync_warning || data.local_mirror_warning || '已保存');
+                status.className = dirty || data.sync_warning || data.local_mirror_warning ? 'save-status err' : 'save-status ok';
                 setTimeout(() => { if (!dirty) status.textContent = ''; }, 2000);
-                return true;
+                return !dirty;
             } else {
                 status.textContent = data.error ? `保存失败：${data.error}` : '保存失败';
                 status.className = 'save-status err';
@@ -1602,9 +1627,18 @@
 
     function renderTags() {
         const row = document.getElementById('tag-row');
-        row.innerHTML = currentTags.map((t, i) =>
-            `<span class="tag-pill">${t}<button onclick="removeTag(${i})" title="删除">×</button></span>`
-        ).join('');
+        row.replaceChildren();
+        currentTags.forEach((tag, index) => {
+            const pill = document.createElement('span');
+            pill.className = 'tag-pill';
+            pill.textContent = tag;
+            const remove = document.createElement('button');
+            remove.title = '删除';
+            remove.textContent = '×';
+            remove.addEventListener('click', () => removeTag(index));
+            pill.appendChild(remove);
+            row.appendChild(pill);
+        });
         const input = document.createElement('input');
         input.className = 'tag-input';
         input.placeholder = '+ 标签';
@@ -1632,13 +1666,8 @@
     }
 
     async function saveTags() {
-        try {
-            await fetch(`/api/articles/${ARTICLE_ID}/tags`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tags: currentTags }),
-            });
-        } catch (e) { console.error('Tag save error:', e); }
+        markDirty();
+        await saveContent();
     }
 
     async function loadTags() {
@@ -1652,12 +1681,24 @@
 
     async function loadContent() {
         try {
-            const res = await fetch(`/api/articles/${ARTICLE_ID}/content`);
+            const res = await fetch(`/api/articles/${ARTICLE_ID}/document`);
+            if (!res.ok) throw new Error('无法读取网页正式版本');
             const data = await res.json();
             if (data.content !== undefined) {
+                documentRevision = data.revision;
+                currentArticleTitle = data.title;
+                document.getElementById('toolbar-title').textContent = data.title;
+                document.title = data.title;
+                currentTags = data.tags;
+                renderTags();
                 editor.value = data.content;
                 renderPreview(data.content);
                 updateWc(data.content);
+                if (data.local_conflict) {
+                    const status = document.getElementById('save-status');
+                    status.textContent = '本地副本有不同修改；保存网页版本时会先备份本地稿';
+                    status.className = 'save-status err';
+                }
             }
         } catch (e) {
             preview.innerHTML = '<p style="color:var(--error)">加载失败：' + e.message + '</p>';
@@ -1776,11 +1817,14 @@
 
         async function commitTitle() {
             const val = input.value.trim() || current;
-            await fetch(`/api/articles/${ARTICLE_ID}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: val }),
-            });
+            currentArticleTitle = val;
+            markDirty();
+            const saved = await saveContent();
+            if (!saved) {
+                currentArticleTitle = current;
+                input.focus();
+                return;
+            }
             const newSpan = document.createElement('span');
             newSpan.className = 'toolbar-title';
             newSpan.id = 'toolbar-title';
@@ -1798,7 +1842,6 @@
         });
     }
 
-    loadTags();
     loadInsights();
     (async () => { await loadContent(); await loadHighlights(); applyHighlightsToPreview(); })();
 

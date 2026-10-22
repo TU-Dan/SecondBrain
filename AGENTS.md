@@ -50,6 +50,9 @@ For the private edit-only website, run `python -m pytest tests/test_knowledge_we
 then verify article viewing and saving through `knowledge_web:app`. Deployment
 and restore details are in `docs/deploy-knowledge-web.md`. Never replace the
 server's SQLite database or Markdown files during a code update.
+For knowledge sync changes, run `python -m pytest tests/test_knowledge_sync.py -q`
+and preview a real sync with `python scripts/sync_knowledge.py` before applying.
+Keep the server article as the canonical version, and preserve both sides on a conflict.
 
 For a real Douyin acceptance check, confirm:
 

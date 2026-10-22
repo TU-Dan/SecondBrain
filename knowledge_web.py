@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import os
-import tempfile
+import re
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,10 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from services import db
+from services import knowledge_document as document
 
 BASE = ""
-SCRIPTS_DIR = Path("static/scripts")
 ORIGIN = os.getenv("KNOWLEDGE_WEB_ORIGIN", "").rstrip("/")
+SYNC_TOKEN = os.getenv("KNOWLEDGE_SYNC_TOKEN", "")
 templates = Jinja2Templates(directory="templates")
 
 
@@ -50,7 +54,7 @@ app.mount(f"{BASE}/static/images", StaticFiles(directory="static/images"), name=
 @app.middleware("http")
 async def protect_writes(request: Request, call_next):
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
-        if ORIGIN and request.headers.get("origin") != ORIGIN:
+        if ORIGIN and request.headers.get("origin") != ORIGIN and not _is_sync_request(request):
             return JSONResponse({"error": "invalid origin"}, status_code=403)
         if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
             return JSONResponse({"error": "JSON required"}, status_code=415)
@@ -65,25 +69,10 @@ async def protect_writes(request: Request, call_next):
     return response
 
 
-def _revision(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def _content_path(article: dict) -> Path | None:
-    stored = article.get("article_md_path")
-    if not stored:
-        return None
-    path = Path(str(stored).lstrip("/")).resolve()
-    if not path.is_relative_to(SCRIPTS_DIR.resolve()) or path.suffix.lower() != ".md":
-        raise ValueError("invalid article path")
-    return path
-
-
-def _read_content(article: dict) -> tuple[str, bool]:
-    path = _content_path(article)
-    if path is None:
-        return f"# {article.get('title') or '未命名文章'}\n\n{article.get('summary') or ''}".strip(), True
-    return path.read_text(encoding="utf-8"), False
+def _is_sync_request(request: Request) -> bool:
+    return bool(SYNC_TOKEN) and secrets.compare_digest(
+        request.headers.get("x-knowledge-sync-key", ""), SYNC_TOKEN
+    )
 
 
 def _card(article: dict) -> dict:
@@ -132,77 +121,150 @@ async def article(article_id: str):
 
 @app.get(f"{BASE}/api/articles/{{article_id}}/content")
 async def content(article_id: str):
-    item = db.get_article(article_id)
-    if not item:
+    if not db.get_article(article_id):
         return JSONResponse({"error": "not found"}, status_code=404)
     try:
-        body, fallback = _read_content(item)
+        item = document.read_document(article_id)
     except (OSError, ValueError):
         return JSONResponse({"error": "article file unavailable"}, status_code=404)
-    return {"content": body, "fallback": fallback, "revision": _revision(body)}
+    return {key: item[key] for key in ("content", "fallback", "revision")}
+
+
+@app.get(f"{BASE}/api/articles/{{article_id}}/document")
+async def get_document(article_id: str):
+    try:
+        item = document.read_document(article_id)
+    except (OSError, ValueError):
+        return JSONResponse({"error": "article file unavailable"}, status_code=404)
+    return item if item else JSONResponse({"error": "not found"}, status_code=404)
+
+
+def _document_error(error: Exception) -> JSONResponse:
+    if isinstance(error, document.DocumentConflict):
+        return JSONResponse({"error": str(error)}, status_code=409)
+    if isinstance(error, KeyError):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if isinstance(error, ValueError):
+        return JSONResponse({"error": str(error)}, status_code=400)
+    return JSONResponse({"error": "save failed"}, status_code=500)
+
+
+@app.put(f"{BASE}/api/articles/{{article_id}}/document")
+async def put_document(article_id: str, request: Request):
+    try:
+        body = await request.json()
+        return document.write_document(article_id, body, source="local" if _is_sync_request(request) else "web")
+    except (ValueError, KeyError, document.DocumentConflict, OSError) as error:
+        return _document_error(error)
+
+
+@app.get(f"{BASE}/api/articles/{{article_id}}/history")
+async def article_history(article_id: str):
+    if not db.get_article(article_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"history": document.history(article_id)}
+
+
+@app.get(f"{BASE}/api/articles/{{article_id}}/history/{{revision_id}}")
+async def article_history_version(article_id: str, revision_id: str):
+    item = document.history_version(article_id, revision_id)
+    return item if item else JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.get(f"{BASE}/api/sync/manifest")
+async def sync_manifest(request: Request):
+    if not _is_sync_request(request):
+        return JSONResponse({"error": "sync key required"}, status_code=403)
+    with db.get_conn() as conn:
+        ids = [row[0] for row in conn.execute("SELECT id FROM articles")]
+    revisions = {}
+    for article_id in ids:
+        try:
+            item = document.read_document(article_id)
+        except (OSError, ValueError):
+            continue
+        revisions[article_id] = item["revision"]
+    return {"revisions": revisions}
+
+
+@app.post(f"{BASE}/api/sync/articles")
+async def sync_create_article(request: Request):
+    if not _is_sync_request(request):
+        return JSONResponse({"error": "sync key required"}, status_code=403)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid document")
+        images = body.pop("images", {})
+        if not isinstance(images, dict) or len(images) > 30:
+            raise ValueError("invalid images")
+        image_dir = Path("static/images")
+        image_dir.mkdir(parents=True, exist_ok=True)
+        decoded = {}
+        for name, encoded in images.items():
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}\.(?:png|jpe?g|gif|webp)", name, re.I):
+                raise ValueError("invalid image name")
+            if not isinstance(encoded, str):
+                raise ValueError("invalid image data")
+            try:
+                decoded[name] = base64.b64decode(encoded, validate=True)
+            except binascii.Error as error:
+                raise ValueError("invalid image data") from error
+        if sum(map(len, decoded.values())) > 12_000_000:
+            raise ValueError("images too large")
+        for name, data in decoded.items():
+            path = image_dir / name
+            if path.exists() and path.read_bytes() != data:
+                raise document.DocumentConflict("image name collision")
+        created = []
+        try:
+            for name, data in decoded.items():
+                path = image_dir / name
+                if not path.exists():
+                    path.write_bytes(data)
+                    created.append(path)
+            result = document.create_document(body)
+        except Exception:
+            for path in created:
+                path.unlink(missing_ok=True)
+            raise
+        return result
+    except (ValueError, KeyError, document.DocumentConflict, OSError) as error:
+        return _document_error(error)
 
 
 @app.patch(f"{BASE}/api/articles/{{article_id}}")
 async def update_article(article_id: str, request: Request):
-    if not db.get_article(article_id):
-        return JSONResponse({"error": "not found"}, status_code=404)
     try:
         body = await request.json()
     except ValueError:
         return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    if not isinstance(body, dict) or not body or set(body) - {"title", "tags"}:
+    if (not isinstance(body, dict) or not set(body) & {"title", "tags"}
+            or set(body) - {"title", "tags", "revision"}
+            or not isinstance(body.get("revision"), str)):
         return JSONResponse({"error": "title or tags required"}, status_code=400)
-    if "title" in body and (not isinstance(body["title"], str) or not 1 <= len(body["title"].strip()) <= 300):
-        return JSONResponse({"error": "invalid title"}, status_code=400)
-    if "tags" in body and (
-        not isinstance(body["tags"], list) or len(body["tags"]) > 20
-        or any(not isinstance(tag, str) or not 1 <= len(tag.strip()) <= 40 for tag in body["tags"])
-    ):
-        return JSONResponse({"error": "invalid tags"}, status_code=400)
-    if "title" in body:
-        db.update_article_title(article_id, body["title"].strip())
-    if "tags" in body:
-        db.update_tags(article_id, list(dict.fromkeys(tag.strip() for tag in body["tags"])))
-    return {"ok": True}
+    try:
+        current = document.read_document(article_id)
+        if current is None:
+            raise KeyError(article_id)
+        current.update(body)
+        result = document.write_document(article_id, current, source="web")
+        return {"ok": True, "revision": result["revision"]}
+    except (ValueError, KeyError, document.DocumentConflict, OSError) as error:
+        return _document_error(error)
 
 
 @app.put(f"{BASE}/api/articles/{{article_id}}/content")
 async def update_content(article_id: str, request: Request):
-    item = db.get_article(article_id)
-    if not item:
-        return JSONResponse({"error": "not found"}, status_code=404)
     try:
         body = await request.json()
-    except ValueError:
-        return JSONResponse({"error": "invalid JSON"}, status_code=400)
-    if (not isinstance(body, dict) or not isinstance(body.get("content"), str)
-            or len(body["content"].encode("utf-8")) > 2_000_000
-            or not isinstance(body.get("revision"), str)):
-        return JSONResponse({"error": "invalid content"}, status_code=400)
-    try:
-        current, _ = _read_content(item)
-        path = _content_path(item)
-    except (OSError, ValueError):
-        return JSONResponse({"error": "article file unavailable"}, status_code=404)
-    if body["revision"] != _revision(current):
-        return JSONResponse({"error": "文章已被其他页面修改，请刷新后重试"}, status_code=409)
-    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    if path is None:
-        safe_id = hashlib.sha256(article_id.encode("utf-8")).hexdigest()[:24]
-        path = SCRIPTS_DIR.resolve() / f"manual_{safe_id}.md"
-    temp_name = None
-    try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temp:
-            temp_name = temp.name
-            temp.write(body["content"])
-            temp.flush()
-            os.fsync(temp.fileno())
-        os.replace(temp_name, path)
-        if not item.get("article_md_path"):
-            db.update_article_content_path(article_id, f"/static/scripts/{path.name}", len(body["content"]))
-    except OSError:
-        return JSONResponse({"error": "save failed"}, status_code=500)
-    finally:
-        if temp_name and os.path.exists(temp_name):
-            os.unlink(temp_name)
-    return {"ok": True, "revision": _revision(body["content"])}
+        if not isinstance(body, dict) or set(body) != {"content", "revision"}:
+            raise ValueError("invalid content")
+        current = document.read_document(article_id)
+        if current is None:
+            raise KeyError(article_id)
+        current.update(body)
+        result = document.write_document(article_id, current, source="web")
+        return {"ok": True, "revision": result["revision"]}
+    except (ValueError, KeyError, document.DocumentConflict, OSError) as error:
+        return _document_error(error)
