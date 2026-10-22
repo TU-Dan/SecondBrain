@@ -1,3 +1,4 @@
+import base64
 import copy
 import sqlite3
 
@@ -29,6 +30,11 @@ def test_sync_push_pull_and_conflict_preserves_both_sides(tmp_path, monkeypatch)
     def fake_request(path, *, method="GET", body=None):
         if path == "/api/sync/manifest":
             return {"revisions": {article_id: item["revision"] for article_id, item in remote.items()}}
+        if path == "/api/sync/articles" and method == "POST":
+            assert base64.b64decode(body["images"]["cover.jpg"]) == b"cover image"
+            new = {**body, "revision": document.revision(body["title"], body["tags"], body["content"])}
+            remote[body["id"]] = new
+            return copy.deepcopy(new)
         if path == "/api/articles/one/document":
             if method == "GET":
                 return copy.deepcopy(remote["one"])
@@ -64,3 +70,16 @@ def test_sync_push_pull_and_conflict_preserves_both_sides(tmp_path, monkeypatch)
     assert sync.synchronize(apply=True)["conflicts"] == ["one"]
     assert (scripts / "one.md").read_text(encoding="utf-8") == "# Another local edit"
     assert remote["one"]["content"] == "# Another server edit"
+
+    image_dir = tmp_path / "static" / "images"
+    image_dir.mkdir()
+    (image_dir / "cover.jpg").write_bytes(b"cover image")
+    (scripts / "new.md").write_text("# New", encoding="utf-8")
+    new_id = "a" * 32
+    with sqlite3.connect(database) as conn:
+        conn.execute("""
+            INSERT INTO articles (id, title, tags, article_md_path, image_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (new_id, "New", "[]", "/static/scripts/new.md", "/static/images/cover.jpg", "2026-01-02"))
+    assert sync.synchronize(apply=True)["new"] == [new_id]
+    assert remote[new_id]["content"] == "# New"
