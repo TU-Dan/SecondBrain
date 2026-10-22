@@ -1,6 +1,9 @@
 import sqlite3
+import re
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+from fastapi.templating import Jinja2Templates
 
 import knowledge_web
 
@@ -14,6 +17,7 @@ def test_edit_only_site_keeps_article_edits_and_rejects_other_operations(tmp_pat
     database = tmp_path / "data" / "knowledge.db"
     monkeypatch.setattr(knowledge_web.db, "DB_PATH", str(database))
     monkeypatch.setattr(knowledge_web, "ORIGIN", "https://example.com")
+    monkeypatch.setattr(knowledge_web, "templates", Jinja2Templates(directory=Path(knowledge_web.__file__).parent / "templates"))
     with sqlite3.connect(database) as conn:
         conn.execute("""
             CREATE TABLE articles (
@@ -32,6 +36,10 @@ def test_edit_only_site_keeps_article_edits_and_rejects_other_operations(tmp_pat
 
     headers = {"Origin": "https://example.com"}
     with TestClient(knowledge_web.app) as client:
+        home_html = client.get("/").text
+        article_html = client.get("/article/one").text
+        assert re.search(r'/assets/knowledge\.css\?v=[0-9a-f]{12}', home_html)
+        assert re.search(r'/assets/knowledge\.css\?v=[0-9a-f]{12}', article_html)
         assert client.get("/api/articles").json()["articles"][0]["id"] == "bad"
         content = client.get("/api/articles/one/content").json()
         assert content["content"] == "# Original\n"

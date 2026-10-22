@@ -13,6 +13,7 @@
 
 网页使用独立的最小依赖文件 `requirements-knowledge-web.txt`。不运行原 `main.py`，也不加载 API Key、智能体、播客队列或语音模型。服务器无需 `.env`。
 `easynote.brainpowerai.com.cn` 已移除知识库代理配置。写入请求只接受来自 `https://second.brainpowerai.com.cn` 的浏览器来源。
+CSS 和页面脚本使用内容哈希版本参数；每次更新这些文件后需重启服务，让浏览器获取新资源。
 
 ## 数据边界
 

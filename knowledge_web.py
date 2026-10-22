@@ -21,6 +21,18 @@ ORIGIN = os.getenv("KNOWLEDGE_WEB_ORIGIN", "").rstrip("/")
 templates = Jinja2Templates(directory="templates")
 
 
+def _asset_version() -> str:
+    digest = hashlib.sha256()
+    assets = Path(__file__).resolve().parent / "knowledge_assets"
+    for name in ("knowledge.css", "theme.js", "library.js", "article.js"):
+        digest.update(name.encode("utf-8"))
+        digest.update((assets / name).read_bytes())
+    return digest.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not Path(db.DB_PATH).is_file():
@@ -82,14 +94,14 @@ def _card(article: dict) -> dict:
 
 @app.get(f"{BASE}/", response_class=HTMLResponse)
 async def home(request: Request):
-    return templates.TemplateResponse(request, "knowledge_library.html")
+    return templates.TemplateResponse(request, "knowledge_library.html", {"asset_version": ASSET_VERSION})
 
 
 @app.get(f"{BASE}/article/{{article_id}}", response_class=HTMLResponse)
 async def article_page(request: Request, article_id: str):
     if not db.get_article(article_id):
         return HTMLResponse("文章不存在", status_code=404)
-    return templates.TemplateResponse(request, "knowledge_article.html", {"article_id": article_id})
+    return templates.TemplateResponse(request, "knowledge_article.html", {"article_id": article_id, "asset_version": ASSET_VERSION})
 
 
 @app.get(f"{BASE}/healthz")
