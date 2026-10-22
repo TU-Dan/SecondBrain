@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>文章 · 我的知识库</title>
+  <link rel="stylesheet" href="/brain/assets/knowledge.css">
+  <script src="/brain/assets/vendor/marked.min.js" defer></script>
+  <script src="/brain/assets/vendor/purify.min.js" defer></script>
+  <script src="/brain/assets/article.js" defer></script>
+</head>
+<body data-article-id="{{ article_id }}">
+  <main class="shell article-shell">
+    <nav><a class="back-link" href="/brain/">← 返回知识库</a></nav>
+    <header class="article-header">
+      <img id="cover" class="cover" alt="" hidden>
+      <div id="source" class="eyebrow"></div>
+      <h1 id="heading">加载中…</h1>
+      <a id="source-link" class="source-link" target="_blank" rel="noopener noreferrer" hidden>查看原文 ↗</a>
+    </header>
+    <section class="edit-panel" aria-label="编辑文章">
+      <div class="panel-heading"><h2>编辑文章</h2><span id="status" role="status"></span></div>
+      <label for="title">标题</label>
+      <input id="title" type="text" maxlength="300">
+      <label for="tags">标签</label>
+      <input id="tags" type="text" placeholder="用逗号分隔标签">
+      <div class="panel-heading body-heading"><label for="editor">正文 Markdown</label><span id="word-count"></span></div>
+      <textarea id="editor" spellcheck="false" placeholder="在这里编辑正文…"></textarea>
+      <p id="fallback-note" class="hint" hidden>这篇文章原本只有摘要；保存后会创建正文文件。</p>
+      <div class="action-row"><button id="save" type="button">保存修改</button><span>保存前可在下方查看预览</span></div>
+    </section>
+    <section class="preview-panel" aria-label="文章预览">
+      <div class="preview-heading"><h2>阅读预览</h2><span>随编辑实时更新</span></div>
+      <div id="preview" class="markdown-body"></div>
+    </section>
+  </main>
+</body>
+</html>

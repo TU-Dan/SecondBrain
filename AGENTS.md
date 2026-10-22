@@ -46,6 +46,11 @@ python -m py_compile main.py services/*.py packages/content-to-podcast/content_t
 For frontend changes, start the app and verify the affected workflow in a
 browser. Run `git diff --check` before finishing.
 
+For the private edit-only website, run `python -m pytest tests/test_knowledge_web.py -q`,
+then verify article viewing and saving through `knowledge_web:app`. Deployment
+and restore details are in `docs/deploy-knowledge-web.md`. Never replace the
+server's SQLite database or Markdown files during a code update.
+
 For a real Douyin acceptance check, confirm:
 
 - `bash scripts/check_podcast_tools.sh` reports downloader and Cookie ready.

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>我的知识库</title>
+  <link rel="stylesheet" href="/brain/assets/knowledge.css">
+  <script src="/brain/assets/library.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="site-header">
+      <div>
+        <div class="eyebrow">MY SECOND BRAIN</div>
+        <h1>我的知识库</h1>
+        <p class="subtitle">查找、阅读并编辑已收藏的文章。</p>
+      </div>
+      <div class="header-mark" aria-hidden="true">✳</div>
+    </header>
+    <section class="search-panel" aria-label="搜索文章">
+      <label for="search">搜索标题或摘要</label>
+      <input id="search" type="search" placeholder="输入关键词…" autocomplete="off">
+    </section>
+    <div class="list-header"><h2>文章</h2><span id="count"></span></div>
+    <p id="message" class="message" role="status">加载中…</p>
+    <div id="articles" class="article-grid"></div>
+    <button id="more" class="more-button" type="button" hidden>加载更多</button>
+  </main>
+</body>
+</html>
