@@ -32,27 +32,28 @@ def test_edit_only_site_keeps_article_edits_and_rejects_other_operations(tmp_pat
 
     headers = {"Origin": "https://example.com"}
     with TestClient(knowledge_web.app) as client:
-        assert client.get("/brain/api/articles").json()["articles"][0]["id"] == "bad"
-        content = client.get("/brain/api/articles/one/content").json()
+        assert client.get("/api/articles").json()["articles"][0]["id"] == "bad"
+        content = client.get("/api/articles/one/content").json()
         assert content["content"] == "# Original\n"
-        denied = client.put("/brain/api/articles/one/content", json={"content": "edited", "revision": content["revision"]})
+        denied = client.put("/api/articles/one/content", json={"content": "edited", "revision": content["revision"]})
         assert denied.status_code == 403
-        saved = client.put("/brain/api/articles/one/content", headers=headers, json={"content": "# Edited\n", "revision": content["revision"]})
+        saved = client.put("/api/articles/one/content", headers=headers, json={"content": "# Edited\n", "revision": content["revision"]})
         assert saved.status_code == 200
         assert (scripts / "existing.md").read_text(encoding="utf-8") == "# Edited\n"
-        stale = client.put("/brain/api/articles/one/content", headers=headers, json={"content": "stale", "revision": content["revision"]})
+        stale = client.put("/api/articles/one/content", headers=headers, json={"content": "stale", "revision": content["revision"]})
         assert stale.status_code == 409
         assert (scripts / "existing.md").read_text(encoding="utf-8") == "# Edited\n"
-        assert client.patch("/brain/api/articles/one", headers=headers, json={"title": "New title", "tags": ["读书", "思考"]}).status_code == 200
-        updated = client.get("/brain/api/articles/one").json()
+        assert client.patch("/api/articles/one", headers=headers, json={"title": "New title", "tags": ["读书", "思考"]}).status_code == 200
+        updated = client.get("/api/articles/one").json()
         assert updated["title"] == "New title"
         assert updated["tags"] == '["读书", "思考"]'
 
-        fallback = client.get("/brain/api/articles/two/content").json()
+        fallback = client.get("/api/articles/two/content").json()
         assert fallback["fallback"] is True
-        created = client.put("/brain/api/articles/two/content", headers=headers, json={"content": "# Created", "revision": fallback["revision"]})
+        created = client.put("/api/articles/two/content", headers=headers, json={"content": "# Created", "revision": fallback["revision"]})
         assert created.status_code == 200
-        assert client.get("/brain/api/articles/two/content").json()["content"] == "# Created"
-        assert client.get("/brain/api/articles/bad/content").status_code == 404
-        assert client.post("/brain/api/chat", headers=headers, json={}).status_code == 404
-        assert client.post("/brain/generate/url", headers=headers, json={}).status_code == 404
+        assert client.get("/api/articles/two/content").json()["content"] == "# Created"
+        assert client.get("/api/articles/bad/content").status_code == 404
+        assert client.post("/api/chat", headers=headers, json={}).status_code == 404
+        assert client.post("/generate/url", headers=headers, json={}).status_code == 404
+        assert client.get("/brain/api/articles").status_code == 404

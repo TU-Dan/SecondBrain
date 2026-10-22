@@ -1,4 +1,4 @@
-const BASE = '/brain';
+const BASE = '';
 const search = document.getElementById('search');
 const articles = document.getElementById('articles');
 const message = document.getElementById('message');

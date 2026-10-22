@@ -9,13 +9,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from services import db
 
-BASE = "/brain"
+BASE = ""
 SCRIPTS_DIR = Path("static/scripts")
 ORIGIN = os.getenv("KNOWLEDGE_WEB_ORIGIN", "").rstrip("/")
 templates = Jinja2Templates(directory="templates")
@@ -78,11 +78,6 @@ def _card(article: dict) -> dict:
     return {key: article.get(key) for key in (
         "id", "title", "summary", "source_type", "source_url", "image_url", "created_at", "tags", "word_count"
     )}
-
-
-@app.get(BASE)
-async def redirect_home():
-    return RedirectResponse(f"{BASE}/")
 
 
 @app.get(f"{BASE}/", response_class=HTMLResponse)

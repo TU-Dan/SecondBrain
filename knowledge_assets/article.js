@@ -1,4 +1,4 @@
-const BASE = '/brain';
+const BASE = '';
 const id = document.body.dataset.articleId;
 const api = `${BASE}/api/articles/${encodeURIComponent(id)}`;
 const title = document.getElementById('title');
