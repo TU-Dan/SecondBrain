@@ -8,7 +8,7 @@
 - 服务：`mysecondbrain-web.service`，单进程 Uvicorn 监听 `127.0.0.1:8789`
 - 入口：`knowledge_web.py`，只提供文章查看、搜索及标题、标签、正文编辑
 - Caddy：`/home/ubuntu/caddy/Caddyfile`，为整个 `second.brainpowerai.com.cn` 站点设置 HTTPS 和 Basic Auth
-- 登录名：`dan`；随机密码只保存在服务器 `/home/ubuntu/.config/mysecondbrain-web/password`
+- 登录名：`dan`；密码保存在服务器 `/home/ubuntu/.config/mysecondbrain-web/password`，不写入仓库
 - 每日 04:10 运行备份，保留最近 14 份于 `/home/ubuntu/backups/mysecondbrain-web`
 
 网页使用独立的最小依赖文件 `requirements-knowledge-web.txt`。不运行原 `main.py`，也不加载 API Key、智能体、播客队列或语音模型。服务器无需 `.env`。
@@ -36,10 +36,11 @@ sudo systemctl status mysecondbrain-web.service
 ## 验收与备份
 
 1. 未登录访问首页和 `/assets/knowledge.css` 应返回 401。
-2. 登录后首页列出文章，搜索能找到文章；打开文章可看到标题、标签和正文预览。
-3. 修改标题、标签、正文并保存，刷新后仍保留；旧页面的正文版本在他处修改后应返回 409，避免覆盖。
-4. `/api/chat`、`/generate/url` 应返回 404；直接访问 `8789` 只能从服务器本机进行。
-5. 手动备份：
+2. 登录后首页列出文章，搜索及常用标签筛选能找到文章；深色模式在两个页面保持一致。
+3. 打开文章可看到标题、标签和正文；切换到编辑模式后左右分栏显示 Markdown 与实时预览。
+4. 修改标题、标签、正文并保存，刷新后仍保留；旧页面的正文版本在他处修改后应返回 409，避免覆盖。
+5. `/api/chat`、`/generate/url` 应返回 404；直接访问 `8789` 只能从服务器本机进行。
+6. 手动备份：
 
 ```bash
 cd /home/ubuntu/mysecondbrain-web

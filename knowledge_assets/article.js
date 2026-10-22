@@ -7,7 +7,39 @@ const editor = document.getElementById('editor');
 const preview = document.getElementById('preview');
 const status = document.getElementById('status');
 const saveButton = document.getElementById('save');
+const editToggle = document.getElementById('edit-toggle');
+const doneButton = document.getElementById('done');
+const editorPane = document.getElementById('editor-pane');
+const displayTags = document.getElementById('display-tags');
 let revision = '';
+let dirty = false;
+editToggle.disabled = true;
+
+function setStatus(message, state = '') {
+  status.textContent = message;
+  status.dataset.state = state;
+}
+
+function setMode(editing) {
+  document.body.classList.toggle('is-editing', editing);
+  editorPane.hidden = !editing;
+  editToggle.hidden = editing;
+  saveButton.hidden = !editing;
+  doneButton.hidden = !editing;
+  document.getElementById('mode-label').textContent = editing ? '编辑与实时预览' : '阅读模式';
+  document.getElementById('preview-note').textContent = editing ? '实时预览' : '文章内容';
+  if (editing) title.focus();
+}
+
+function showTags(values) {
+  displayTags.replaceChildren();
+  for (const value of values) {
+    const chip = document.createElement('span');
+    chip.className = 'display-tag';
+    chip.textContent = value;
+    displayTags.appendChild(chip);
+  }
+}
 
 function parsedTags(value) {
   try {
@@ -42,11 +74,15 @@ async function load() {
     if (!articleResponse.ok || !contentResponse.ok) throw new Error('文章不可用');
     const article = await articleResponse.json();
     const content = await contentResponse.json();
-    document.title = `${article.title} · 我的知识库`;
+    document.title = `${article.title} · Second Brain`;
     document.getElementById('heading').textContent = article.title || '未命名文章';
+    document.getElementById('toolbar-title').textContent = article.title || '未命名文章';
     document.getElementById('source').textContent = article.source_type || '知识笔记';
+    document.getElementById('date').textContent = article.created_at ? article.created_at.slice(0, 10) : '';
     title.value = article.title || '';
-    tags.value = parsedTags(article.tags).join('，');
+    const tagValues = parsedTags(article.tags);
+    tags.value = tagValues.join('，');
+    showTags(tagValues);
     editor.value = content.content;
     revision = content.revision;
     document.getElementById('fallback-note').hidden = !content.fallback;
@@ -60,10 +96,11 @@ async function load() {
       link.href = article.source_url;
       link.hidden = false;
     }
-    status.textContent = '已加载';
+    editToggle.disabled = false;
+    setStatus('已加载');
     render();
   } catch (_) {
-    status.textContent = '加载失败，请刷新页面重试';
+    setStatus('加载失败，请刷新页面重试', 'error');
     saveButton.disabled = true;
   }
 }
@@ -83,32 +120,52 @@ async function save() {
   const newTitle = title.value.trim();
   const newTags = tags.value.split(/[,，]/).map(tag => tag.trim()).filter(Boolean);
   if (!newTitle) {
-    status.textContent = '标题不能为空';
+    setStatus('标题不能为空', 'error');
     title.focus();
-    return;
+    return false;
   }
   if (newTags.length > 20 || newTags.some(tag => tag.length > 40)) {
-    status.textContent = '最多 20 个标签，每个不超过 40 字';
-    return;
+    setStatus('最多 20 个标签，每个不超过 40 字', 'error');
+    return false;
   }
   saveButton.disabled = true;
-  status.textContent = '保存中…';
+  doneButton.disabled = true;
+  setStatus('保存中…');
   try {
     const content = await send(`${api}/content`, 'PUT', {content: editor.value, revision});
     revision = content.revision;
     await send(api, 'PATCH', {title: newTitle, tags: newTags});
     document.getElementById('heading').textContent = newTitle;
-    document.title = `${newTitle} · 我的知识库`;
+    document.getElementById('toolbar-title').textContent = newTitle;
+    document.title = `${newTitle} · Second Brain`;
+    showTags(newTags);
     document.getElementById('fallback-note').hidden = true;
-    status.textContent = '已保存';
+    dirty = false;
+    setStatus('已保存', 'saved');
+    return true;
   } catch (error) {
-    status.textContent = error.message;
+    setStatus(error.message, 'error');
+    return false;
   } finally {
     saveButton.disabled = false;
+    doneButton.disabled = false;
   }
 }
 
-for (const field of [title, tags, editor]) field.addEventListener('input', () => { status.textContent = '有未保存的修改'; });
+for (const field of [title, tags, editor]) field.addEventListener('input', () => {
+  dirty = true;
+  setStatus('有未保存的修改', 'dirty');
+});
 editor.addEventListener('input', render);
 saveButton.addEventListener('click', save);
+editToggle.addEventListener('click', () => setMode(true));
+doneButton.addEventListener('click', async () => {
+  if (!dirty || await save()) setMode(false);
+});
+window.addEventListener('beforeunload', (event) => {
+  if (dirty) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
 load();

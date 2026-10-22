@@ -3,36 +3,65 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>文章 · 我的知识库</title>
+  <meta name="theme-color" content="#f8f9fa">
+  <title>文章 · Second Brain</title>
   <link rel="stylesheet" href="/assets/knowledge.css">
   <script src="/assets/vendor/marked.min.js" defer></script>
   <script src="/assets/vendor/purify.min.js" defer></script>
+  <script src="/assets/theme.js" defer></script>
   <script src="/assets/article.js" defer></script>
 </head>
-<body data-article-id="{{ article_id }}">
-  <main class="shell article-shell">
-    <nav><a class="back-link" href="/">← 返回知识库</a></nav>
-    <header class="article-header">
-      <img id="cover" class="cover" alt="" hidden>
-      <div id="source" class="eyebrow"></div>
-      <h1 id="heading">加载中…</h1>
-      <a id="source-link" class="source-link" target="_blank" rel="noopener noreferrer" hidden>查看原文 ↗</a>
+<body class="article-page" data-article-id="{{ article_id }}">
+  <div class="article-app">
+    <header class="article-toolbar">
+      <a class="toolbar-back" href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+        <span>知识库</span>
+      </a>
+      <span class="toolbar-divider"></span>
+      <span id="toolbar-title" class="toolbar-title">加载中…</span>
+      <span class="toolbar-spacer"></span>
+      <span id="status" class="save-status" role="status" aria-live="polite"></span>
+      <button class="theme-toggle icon-only" type="button" data-theme-toggle aria-label="切换深色模式">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+      <button id="edit-toggle" class="button button-dark" type="button">编辑文章 <span aria-hidden="true">↗</span></button>
+      <button id="save" class="button button-mint" type="button" hidden>保存修改</button>
+      <button id="done" class="button button-outline" type="button" hidden>完成</button>
     </header>
-    <section class="edit-panel" aria-label="编辑文章">
-      <div class="panel-heading"><h2>编辑文章</h2><span id="status" role="status"></span></div>
-      <label for="title">标题</label>
-      <input id="title" type="text" maxlength="300">
-      <label for="tags">标签</label>
-      <input id="tags" type="text" placeholder="用逗号分隔标签">
-      <div class="panel-heading body-heading"><label for="editor">正文 Markdown</label><span id="word-count"></span></div>
-      <textarea id="editor" spellcheck="false" placeholder="在这里编辑正文…"></textarea>
-      <p id="fallback-note" class="hint" hidden>这篇文章原本只有摘要；保存后会创建正文文件。</p>
-      <div class="action-row"><button id="save" type="button">保存修改</button><span>保存前可在下方查看预览</span></div>
-    </section>
-    <section class="preview-panel" aria-label="文章预览">
-      <div class="preview-heading"><h2>阅读预览</h2><span>随编辑实时更新</span></div>
-      <div id="preview" class="markdown-body"></div>
-    </section>
-  </main>
+
+    <main class="article-main">
+      <div class="article-context"><span>YOUR COLLECTION</span><span class="context-line"></span><span>ARTICLE</span></div>
+      <section class="article-intro" aria-labelledby="heading">
+        <div class="article-intro-copy">
+          <div class="article-meta"><span id="source">知识笔记</span><span id="date"></span></div>
+          <h1 id="heading">加载中…</h1>
+          <div id="display-tags" class="display-tags"></div>
+          <a id="source-link" class="source-link" target="_blank" rel="noopener noreferrer" hidden>查看原文 <span aria-hidden="true">↗</span></a>
+        </div>
+        <img id="cover" class="cover" alt="文章封面" hidden>
+      </section>
+
+      <div class="workspace-heading"><span>ARTICLE WORKSPACE</span><span id="mode-label">阅读模式</span></div>
+      <div class="article-workspace">
+        <section id="editor-pane" class="workspace-pane editor-pane" aria-label="编辑文章" hidden>
+          <div class="pane-heading"><div><span class="pane-index">01</span><h2>编辑内容</h2></div><span>MARKDOWN</span></div>
+          <div class="editor-fields">
+            <label for="title">文章标题</label>
+            <input id="title" type="text" maxlength="300" placeholder="输入文章标题">
+            <label for="tags">标签</label>
+            <input id="tags" type="text" placeholder="用逗号分隔标签">
+            <div class="field-heading"><label for="editor">正文</label><span id="word-count">0 字符</span></div>
+            <textarea id="editor" spellcheck="false" placeholder="在这里编辑正文…"></textarea>
+            <p id="fallback-note" class="hint" hidden>这篇文章原本只有摘要；保存后会创建正文文件。</p>
+          </div>
+        </section>
+        <section class="workspace-pane preview-pane" aria-label="文章预览">
+          <div class="pane-heading"><div><span class="pane-index">02</span><h2>阅读预览</h2></div><span id="preview-note">文章内容</span></div>
+          <div id="preview" class="markdown-body"></div>
+        </section>
+      </div>
+    </main>
+  </div>
 </body>
 </html>

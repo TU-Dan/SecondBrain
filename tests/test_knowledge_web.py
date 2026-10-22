@@ -47,6 +47,8 @@ def test_edit_only_site_keeps_article_edits_and_rejects_other_operations(tmp_pat
         updated = client.get("/api/articles/one").json()
         assert updated["title"] == "New title"
         assert updated["tags"] == '["读书", "思考"]'
+        assert client.get("/api/tags").json()["tags"] == [{"tag": "读书", "count": 1}, {"tag": "思考", "count": 1}]
+        assert [item["id"] for item in client.get("/api/articles?tag=读书").json()["articles"]] == ["one"]
 
         fallback = client.get("/api/articles/two/content").json()
         assert fallback["fallback"] is True

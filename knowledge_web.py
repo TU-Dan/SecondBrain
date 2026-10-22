@@ -98,10 +98,16 @@ async def healthz():
 
 
 @app.get(f"{BASE}/api/articles")
-async def articles(q: str = "", offset: int = 0):
+async def articles(q: str = "", tag: str = "", offset: int = 0):
     offset = max(0, offset)
-    rows = db.list_articles(query=q.strip()[:200] or None, limit=41, offset=offset)
+    selected_tag = tag.strip()[:40]
+    rows = db.list_articles(query=q.strip()[:200] or None, tags=[selected_tag] if selected_tag else None, limit=41, offset=offset)
     return {"articles": [_card(a) for a in rows[:40]], "has_more": len(rows) > 40}
+
+
+@app.get(f"{BASE}/api/tags")
+async def tags():
+    return {"tags": db.list_all_tags()}
 
 
 @app.get(f"{BASE}/api/articles/{{article_id}}")
